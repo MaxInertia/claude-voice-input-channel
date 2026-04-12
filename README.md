@@ -71,46 +71,7 @@ First run of the daemon downloads the model (~1.5GB for `medium.en`) from
 HuggingFace into `~/.cache/huggingface/`. After that it's fully offline — no
 audio, transcripts, or telemetry leave the machine.
 
-### Audio routing
-
-`voice-stt-svc` routes capture through PortAudio's `pulse` device by default
-(which uses the pipewire-pulse compat layer on PipeWire systems, or
-PulseAudio directly on older setups). With no extra configuration you get
-your system default input source, which works on most systems.
-
-**If you see alternating silent audio buffers** (every other PTT click
-captured silence, transcripts arriving only every other press), your
-default input is probably a **virtual PipeWire source** — noise
-cancellation, echo cancellation, EQ, or similar effect node — whose
-plugin toggles the source's `Props:mute` between consumer sessions. The
-fix is to bypass the virtual node and target the raw hardware input
-directly.
-
-1. Find your raw analog input's `node.name`:
-   ```bash
-   wpctl status                        # look under "Sources"
-   wpctl inspect <id> | grep node.name
-   ```
-   You want the entry that corresponds to your physical sound card
-   (`alsa_input.pci-*` or `alsa_input.usb-*`), not a virtual source.
-
-2. Export the override (e.g. in `~/.bashrc`):
-   ```bash
-   export VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
-   ```
-
-3. Restart the daemon:
-   ```bash
-   voice-stt-svc restart
-   ```
-
-You can also set `VOICE_STT_INPUT_DEVICE` to override the PortAudio backend
-entirely (`pipewire`, `default`, a numeric index, or a device name
-substring). The default `pulse` works for most systems.
-
 ## Run
-
-### Quick: one-command start/stop
 
 The `scripts/voice-stt-svc` helper launches both the daemon and the PTT
 listener in the background and tears them down again. Symlink it onto your
@@ -142,47 +103,6 @@ cd ~/projects/voice-stt
 uv run voice-stt listen           # stdout
 uv run voice-stt type             # type into focused window
 uv run voice-stt clip             # copy to clipboard
-```
-
-### Manual: three terminals
-
-If you'd rather see daemon/listener output live, run each in its own terminal:
-
-```bash
-cd ~/projects/voice-stt
-```
-
-**Terminal 1 — daemon** (loads the model into VRAM, captures mic):
-```bash
-uv run voice-sttd                       # default: medium.en, cuda, float16
-# or: uv run voice-sttd --model small.en
-# or: uv run voice-sttd --model large-v3
-```
-Wait until you see `[voice-sttd] listening: ctrl=... out=...` before continuing.
-
-**Terminal 2 — consumer** (pick one; you can run several in parallel, each in its own terminal):
-```bash
-uv run voice-stt listen                 # print transcripts to stdout
-uv run voice-stt type                   # type into focused window via xdotool
-uv run voice-stt clip                   # copy each utterance to clipboard via xclip
-uv run voice-stt listen | tee -a ~/notes.md
-uv run voice-stt listen | your-llm-cli
-```
-
-**Terminal 3 — control** (or bind to a hotkey, see below):
-```bash
-uv run voice-stt start                  # begin recording
-# ...speak...
-uv run voice-stt stop                   # stop + transcribe + broadcast
-
-uv run voice-stt toggle                 # alternative: flip between start/stop
-uv run voice-stt status                 # "recording" or "idle"
-uv run voice-stt quit                   # shut down the daemon
-```
-
-To kill the daemon if Ctrl-C in terminal 1 doesn't work:
-```bash
-pkill -f voice-sttd
 ```
 
 ## Push-to-talk hotkey
@@ -367,3 +287,102 @@ You lose the daemon health check but the channel works the same.
   socket only delivers utterances to clients connected at broadcast time.
   Utterances spoken while the channel server is reconnecting are dropped.
 - **Channel server logs to stderr only**, surfaced in `~/.claude/debug/<session-id>.txt`.
+
+## Advanced & troubleshooting
+
+### Manual: three-terminal workflow
+
+Instead of `voice-stt-svc`, you can run each piece in its own terminal and
+watch its output live. Useful for debugging, iterating on the daemon, or
+trying out alternative models.
+
+```bash
+cd ~/projects/voice-stt
+```
+
+**Terminal 1 — daemon** (loads the model into VRAM, captures mic):
+```bash
+uv run voice-sttd                       # default: medium.en, cuda, float16
+# or: uv run voice-sttd --model small.en
+# or: uv run voice-sttd --model large-v3
+```
+Wait until you see `[voice-sttd] listening: ctrl=... out=...` before continuing.
+
+**Terminal 2 — consumer** (pick one; you can run several in parallel):
+```bash
+uv run voice-stt listen                 # print transcripts to stdout
+uv run voice-stt type                   # type into focused window via xdotool
+uv run voice-stt clip                   # copy each utterance to clipboard via xclip
+uv run voice-stt listen | tee -a ~/notes.md
+uv run voice-stt listen | your-llm-cli
+```
+
+**Terminal 3 — control** (or bind to a hotkey):
+```bash
+uv run voice-stt start                  # begin recording
+# ...speak...
+uv run voice-stt stop                   # stop + transcribe + broadcast
+
+uv run voice-stt toggle                 # alternative: flip between start/stop
+uv run voice-stt status                 # "recording" or "idle"
+uv run voice-stt quit                   # shut down the daemon
+```
+
+To kill the daemon if Ctrl-C in terminal 1 doesn't work: `pkill -f voice-sttd`.
+
+### Audio routing: alternating silent buffers
+
+**Symptom:** every other PTT click captures silence. Transcripts arrive on
+presses 1, 3, 5… but not 2, 4, 6. `/tmp/voice-stt-daemon.log` shows a real
+buffer duration (`OFF (1.45s)`) but no `> text` line follows, because Whisper's
+VAD dropped the silent audio.
+
+**Cause:** your default PipeWire input source is a **virtual source** —
+noise cancellation, echo cancellation, EQ, or a similar effect node — whose
+plugin toggles its `Props:mute` state between consumer sessions. Under
+hold-to-talk, alternating clicks land inside the muted window for their
+entire ~1s buffer and Whisper sees all-zero samples.
+
+**Fix:** bypass the virtual node and target the raw hardware input directly.
+
+1. Find your raw analog input's `node.name`:
+   ```bash
+   wpctl status                        # look under "Sources"
+   wpctl inspect <id> | grep node.name
+   ```
+   You want the entry that corresponds to your physical sound card
+   (`alsa_input.pci-*` or `alsa_input.usb-*`), not a virtual source.
+
+2. Export the override (e.g. in `~/.bashrc`):
+   ```bash
+   export VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
+   ```
+
+3. Restart the daemon:
+   ```bash
+   voice-stt-svc restart
+   ```
+
+You can also set `VOICE_STT_INPUT_DEVICE` to override the PortAudio backend
+entirely (`pipewire`, `default`, a numeric index, or a device name
+substring). The default `pulse` works for most systems.
+
+### Killing a wedged daemon
+
+If `voice-stt-svc stop` hangs or the daemon is otherwise stuck:
+```bash
+pkill -f 'voice_stt\.daemon|voice-sttd'
+pkill -f 'voice_stt\.ptt_listener|voice-stt-ptt'
+rm -f /tmp/voice-stt-ctrl.sock /tmp/voice-stt-out.sock
+```
+
+### CUDA out of memory
+
+The default `medium.en` fp16 model wants ~1.5 GB VRAM. If you hit
+`RuntimeError: CUDA failed with error out of memory` at daemon startup,
+either close other GPU consumers (games, browsers with GPU accel,
+gpu-screen-recorder) or switch to a smaller model:
+```bash
+uv run voice-sttd --model small.en --compute-type int8_float16
+```
+`small.en` uses ~600 MB VRAM and is still very accurate for dictation.
