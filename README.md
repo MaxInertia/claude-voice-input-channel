@@ -60,7 +60,43 @@ audio, transcripts, or telemetry leave the machine.
 
 ## Run
 
-All commands assume you're in the project directory:
+### Quick: one-command start/stop
+
+The `scripts/voice-stt-svc` helper launches both the daemon and the PTT
+listener in the background and tears them down again. Symlink it onto your
+PATH once:
+
+```bash
+ln -sf ~/projects/voice-stt/scripts/voice-stt-svc ~/bin/voice-stt-svc
+```
+
+Then:
+
+```bash
+voice-stt-svc start      # launch voice-sttd + voice-stt-ptt (backgrounded)
+voice-stt-svc status     # show pids / running state
+voice-stt-svc logs       # tail both log files
+voice-stt-svc stop       # kill both, clean up sockets
+voice-stt-svc restart
+```
+
+Logs land at `/tmp/voice-stt-daemon.log` and `/tmp/voice-stt-ptt.log`. There
+is no autostart on boot — you launch it when you want it.
+
+Once `voice-stt-svc start` reports both running, hold the Razer Naga `=`
+button (or whatever PTT key you've configured) and speak. To consume the
+transcripts, run any consumer in the foreground:
+
+```bash
+cd ~/projects/voice-stt
+uv run voice-stt listen           # stdout
+uv run voice-stt type             # type into focused window
+uv run voice-stt clip             # copy to clipboard
+```
+
+### Manual: three terminals
+
+If you'd rather see daemon/listener output live, run each in its own terminal:
 
 ```bash
 cd ~/projects/voice-stt

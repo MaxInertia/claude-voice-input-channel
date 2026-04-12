@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# voice-stt-svc — start/stop the voice-stt daemon + PTT listener as a pair.
+#
+#   voice-stt-svc start    launch voice-sttd and voice-stt-ptt in the background
+#   voice-stt-svc stop     kill them both, clean up sockets
+#   voice-stt-svc status   show whether each is running
+#   voice-stt-svc restart  stop then start
+#   voice-stt-svc logs     tail both log files
+#
+# Logs: /tmp/voice-stt-{daemon,ptt}.log
+
+set -uo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+RUN_DIR="${VOICE_STT_RUN_DIR:-/tmp}"
+DAEMON_LOG="$RUN_DIR/voice-stt-daemon.log"
+PTT_LOG="$RUN_DIR/voice-stt-ptt.log"
+CTRL_SOCK="/tmp/voice-stt-ctrl.sock"
+OUT_SOCK="/tmp/voice-stt-out.sock"
+
+DAEMON_PAT='voice_stt\.daemon|/voice-sttd'
+PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'
+
+UV="${UV:-$HOME/.local/bin/uv}"
+[[ -x "$UV" ]] || UV="$(command -v uv || true)"
+[[ -x "$UV" ]] || { echo "uv not found; set UV=/path/to/uv" >&2; exit 1; }
+
+_pids() { pgrep -f "$1" 2>/dev/null; }
+_running() { [[ -n "$(_pids "$1")" ]]; }
+
+_start() {
+    local name=$1 pat=$2 cmd=$3 logfile=$4
+    if _running "$pat"; then
+        echo "$name: already running (pid $(_pids "$pat" | tr '\n' ' '))"
+        return
+    fi
+    cd "$PROJECT_DIR"
+    nohup bash -c "exec $cmd" >"$logfile" 2>&1 </dev/null &
+    disown
+    sleep 0.2
+    if _running "$pat"; then
+        echo "$name: started (pid $(_pids "$pat" | tr '\n' ' ')) → $logfile"
+    else
+        echo "$name: failed to start — see $logfile"
+        return 1
+    fi
+}
+
+_stop() {
+    local name=$1 pat=$2
+    local pids; pids=$(_pids "$pat")
+    if [[ -z "$pids" ]]; then
+        echo "$name: not running"
+        return
+    fi
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        _running "$pat" || break
+        sleep 0.2
+    done
+    pids=$(_pids "$pat")
+    if [[ -n "$pids" ]]; then
+        # shellcheck disable=SC2086
+        kill -KILL $pids 2>/dev/null || true
+    fi
+    echo "$name: stopped"
+}
+
+case "${1:-}" in
+    start)
+        _start daemon "$DAEMON_PAT" "$UV run voice-sttd" "$DAEMON_LOG" || exit 1
+        for _ in $(seq 1 100); do
+            [[ -S "$CTRL_SOCK" ]] && break
+            sleep 0.1
+        done
+        if [[ ! -S "$CTRL_SOCK" ]]; then
+            echo "warning: daemon control socket never appeared — check $DAEMON_LOG"
+        fi
+        _start ptt "$PTT_PAT" "$UV run voice-stt-ptt" "$PTT_LOG"
+        ;;
+    stop)
+        _stop ptt "$PTT_PAT"
+        _stop daemon "$DAEMON_PAT"
+        rm -f "$CTRL_SOCK" "$OUT_SOCK"
+        ;;
+    status)
+        for pair in "daemon $DAEMON_PAT" "ptt $PTT_PAT"; do
+            n=${pair%% *}
+            p=${pair#* }
+            pids=$(_pids "$p")
+            if [[ -n "$pids" ]]; then
+                echo "$n: running (pid $(echo "$pids" | tr '\n' ' '))"
+            else
+                echo "$n: stopped"
+            fi
+        done
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    logs)
+        exec tail -F "$DAEMON_LOG" "$PTT_LOG"
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart|status|logs}" >&2
+        exit 2
+        ;;
+esac
