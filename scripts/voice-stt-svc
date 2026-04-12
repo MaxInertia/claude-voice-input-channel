@@ -22,6 +22,21 @@ OUT_SOCK="/tmp/voice-stt-out.sock"
 DAEMON_PAT='voice_stt\.daemon|/voice-sttd'
 PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'
 
+# --- audio routing ---------------------------------------------------------
+# Bypass GNOME's "Noise Canceling source" virtual PipeWire node. That node's
+# noise-cancel module actively toggles Props:mute between consumer sessions,
+# producing alternating all-zero 1s buffers (every other PTT click captured
+# silence). Routing through the pulse compat layer with PULSE_SOURCE pointed
+# at the raw analog input sidesteps the whole effect chain.
+#
+# Override with VOICE_STT_INPUT_DEVICE / VOICE_STT_PULSE_SOURCE if you're on
+# a different machine. Set VOICE_STT_INPUT_DEVICE=default to opt back into
+# the system default source (and whatever effects it runs through).
+: "${VOICE_STT_INPUT_DEVICE:=pulse}"
+: "${VOICE_STT_PULSE_SOURCE:=alsa_input.pci-0000_09_00.4.analog-stereo}"
+export VOICE_STT_INPUT_DEVICE
+export PULSE_SOURCE="$VOICE_STT_PULSE_SOURCE"
+
 UV="${UV:-$HOME/.local/bin/uv}"
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"
 [[ -x "$UV" ]] || { echo "uv not found; set UV=/path/to/uv" >&2; exit 1; }

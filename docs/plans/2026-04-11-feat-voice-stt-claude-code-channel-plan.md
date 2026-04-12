@@ -340,6 +340,26 @@ Concrete steps:
 - **Prompt injection via audio.** Documented above. Not a code risk but a user-awareness risk.
 - **Daemon needs to be running.** Channel reconnects gracefully, but a silently-reconnecting channel server is invisible to the user. Mitigated in Phase 2 by the `claude-voice` launcher wrapper, which performs an explicit daemon health check before launching Claude Code and either confirms the daemon is up or refuses to launch with a clear pointer to `voice-stt-svc start`. This is a hard requirement, not a nice-to-have.
 
+### Post-implementation: alternating-silence mic capture bug
+
+Discovered after the channel was already working end-to-end: every other PTT click produced a 1s buffer of pure silence (peak=0.0, rms=0.0) even though the daemon saw `start_recording`/`stop_recording` cleanly and `len(audio)` was correct. Whisper's VAD dropped these silent buffers, so transcripts arrived on odd clicks only.
+
+**Root cause.** GNOME's default PipeWire input is "Noise Canceling source" (node 36), a virtual node whose noise-cancel module actively toggles `Props:mute` between consumer sessions. Under hold-to-talk, the mute state flips true/false once per click, and alternating clicks land inside the muted window for their entire ~1s buffer.
+
+**Debugging path (what to repeat next time something like this shows up):**
+1. Instrument `stop_recording` to print `peak` and `rms` of the buffer → confirmed alternating zeros in the audio itself, not in Whisper.
+2. Try a persistent `sounddevice.InputStream` instead of per-click open/close → made no difference (rules out PortAudio release races).
+3. Try the raw ALSA hardware device (`hw:1,2`) → rejected 16 kHz (only supports 44.1/48k natively).
+4. Try targeting the `"pipewire"` PortAudio device → still alternating (rules out noise-cancel being a source-selection issue).
+5. `pw-mon --color=never > /tmp/pw-events.log`, grep for `Props:mute` transitions, track per-node → found 6 mute=true events and 20 mute=false events on node 36 during a 6-click test, perfectly lined up with PTT activity.
+6. `wpctl inspect 151` gave the raw analog source's `node.name` = `alsa_input.pci-0000_09_00.4.analog-stereo`.
+
+**Fix.** Route capture through the `pulse` PortAudio device (which uses the `pipewire-pulse` compatibility layer) with `PULSE_SOURCE` set to the raw analog source name. This bypasses the NC node entirely. Defaults baked into `scripts/voice-stt-svc`; overridable via `VOICE_STT_INPUT_DEVICE` and `VOICE_STT_PULSE_SOURCE` env vars. After the fix: 6/6 consecutive clicks transcribed cleanly with peak/rms in the expected 0.1–0.4 range.
+
+**Collateral: persistent audio stream.** Even though it wasn't the root cause, the Phase-post refactor kept the daemon's `sd.InputStream` open for its entire lifetime and gated buffering on a `_capturing` flag, replacing the previous open/close-per-click pattern. This is a strictly safer design on any PortAudio/PipeWire system (no more close→reopen races) and is what shipped. Trade-off: the mic is "in use" for the daemon's entire uptime; privacy-wise nothing is buffered unless `_capturing` is true, but GNOME's OSD will still show the mic as active continuously in future OS updates that track that.
+
+**Residual cosmetic issue.** GNOME's microphone OSD still pops on every click showing "Noise Canceling source" muted. That's GNOME watching the system *default* source (still NC), not the source we're actually reading from. Functionally harmless, ignored.
+
 ## Sources & references
 
 ### Origin

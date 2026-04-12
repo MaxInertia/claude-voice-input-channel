@@ -45,7 +45,13 @@ from . import CTRL_SOCK, OUT_SOCK, SAMPLE_RATE
 
 
 class Daemon:
-    def __init__(self, model_name: str, device: str, compute_type: str):
+    def __init__(
+        self,
+        model_name: str,
+        device: str,
+        compute_type: str,
+        input_device: str | int | None,
+    ):
         from faster_whisper import WhisperModel  # imported lazily so --help is fast
 
         print(f"[voice-sttd] loading model={model_name} device={device} compute={compute_type}", flush=True)
@@ -53,9 +59,33 @@ class Daemon:
         print("[voice-sttd] model ready", flush=True)
 
         self._lock = threading.Lock()
-        self._recording = False
+        self._capturing = False
         self._frames: list[np.ndarray] = []
-        self._stream: sd.InputStream | None = None
+
+        # Persistent input stream opened at startup and kept open for the
+        # daemon lifetime. The callback gates on self._capturing so we only
+        # buffer frames while a PTT press is active, but the stream itself
+        # never reopens. This avoids two independent bugs we hit on PipeWire:
+        #
+        #   1. Open/close races — PortAudio's device release didn't finish
+        #      before the next open, so alternating opens delivered a
+        #      half-released handle producing all-zero samples.
+        #   2. PipeWire's "Noise Canceling source" virtual node (the usual
+        #      "default" input on GNOME) produced all-zero buffers on
+        #      alternating clients/sessions even with a persistent stream.
+        #      Targeting a plain PipeWire device ("pipewire") or the raw
+        #      ALSA hardware bypasses the noise-canceling effect node
+        #      entirely and delivers real audio on every press.
+        print(f"[voice-sttd] opening input device: {input_device!r}", flush=True)
+        self._stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            callback=self._audio_cb,
+            device=input_device,
+        )
+        self._stream.start()
+        print("[voice-sttd] audio input stream open (persistent)", flush=True)
 
         self._out_clients: list[socket.socket] = []
         self._out_lock = threading.Lock()
@@ -65,33 +95,26 @@ class Daemon:
     def _audio_cb(self, indata, frames, time, status):
         if status:
             print(f"[voice-sttd] audio status: {status}", file=sys.stderr, flush=True)
-        # indata is float32 shape (frames, channels); we requested mono
-        self._frames.append(indata[:, 0].copy())
+        # The stream is always open; only buffer frames while capturing. No
+        # lock here — _capturing is a single bool read, and _frames is only
+        # touched by this callback and the ctrl threads in start/stop which
+        # do so while _capturing is False.
+        if self._capturing:
+            self._frames.append(indata[:, 0].copy())
 
     def start_recording(self):
         with self._lock:
-            if self._recording:
+            if self._capturing:
                 return
             self._frames = []
-            self._stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
-                callback=self._audio_cb,
-            )
-            self._stream.start()
-            self._recording = True
-            print("[voice-sttd] recording: ON", flush=True)
+            self._capturing = True
+        print("[voice-sttd] recording: ON", flush=True)
 
     def stop_recording(self):
         with self._lock:
-            if not self._recording:
+            if not self._capturing:
                 return
-            assert self._stream is not None
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-            self._recording = False
+            self._capturing = False
             audio = np.concatenate(self._frames) if self._frames else np.zeros(0, dtype=np.float32)
             self._frames = []
         print(f"[voice-sttd] recording: OFF ({len(audio)/SAMPLE_RATE:.2f}s) — transcribing", flush=True)
@@ -151,13 +174,13 @@ class Daemon:
                 self.stop_recording()
                 conn.sendall(b"ok\n")
             elif data == "toggle":
-                if self._recording:
+                if self._capturing:
                     self.stop_recording()
                 else:
                     self.start_recording()
                 conn.sendall(b"ok\n")
             elif data == "status":
-                conn.sendall(b"recording\n" if self._recording else b"idle\n")
+                conn.sendall(b"recording\n" if self._capturing else b"idle\n")
             elif data == "quit":
                 conn.sendall(b"bye\n")
                 os._exit(0)
@@ -190,14 +213,35 @@ class Daemon:
             threading.Thread(target=self._handle_ctrl, args=(conn,), daemon=True).start()
 
 
+def _parse_input_device(raw: str | None) -> str | int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="medium.en", help="faster-whisper model name (e.g. small.en, medium.en, large-v3)")
     p.add_argument("--device", default="cuda")
     p.add_argument("--compute-type", default="float16", help="float16 (GPU), int8_float16, int8 (CPU)")
+    p.add_argument(
+        "--input-device",
+        default=os.environ.get("VOICE_STT_INPUT_DEVICE", "pipewire"),
+        help=(
+            "Audio input device passed to sounddevice.InputStream(device=...). "
+            "Accepts a numeric index or a substring of the device name. "
+            "Default 'pipewire' bypasses GNOME's 'Noise Canceling source' virtual "
+            "node, which produces alternating-zero buffers on some systems. "
+            "Pass empty string or 'default' to use the system default."
+        ),
+    )
     args = p.parse_args()
 
-    d = Daemon(args.model, args.device, args.compute_type)
+    input_device = _parse_input_device(args.input_device if args.input_device != "default" else None)
+    d = Daemon(args.model, args.device, args.compute_type, input_device)
     try:
         d.serve()
     except KeyboardInterrupt:

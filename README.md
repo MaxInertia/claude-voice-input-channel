@@ -58,6 +58,37 @@ First run of the daemon downloads the model (~1.5GB for `medium.en`) from
 HuggingFace into `~/.cache/huggingface/`. After that it's fully offline — no
 audio, transcripts, or telemetry leave the machine.
 
+### Audio routing (PipeWire + Noise Canceling source)
+
+On systems where GNOME's "Noise Canceling source" is the default PipeWire
+input (typical on recent Ubuntu/Fedora GNOME), the noise-cancel module
+actively toggles the source's `Props:mute` between consumer sessions. Under
+hold-to-talk, that produced all-zero 1s buffers on alternating PTT clicks —
+every other click captured silence and Whisper dropped it.
+
+`voice-stt-svc` works around this by routing capture through the
+`pipewire-pulse` compatibility layer with `PULSE_SOURCE` pointed at the raw
+analog input, bypassing the NC node entirely:
+
+```bash
+# defaults baked into scripts/voice-stt-svc; override if your card differs
+VOICE_STT_INPUT_DEVICE=pulse                                    # PortAudio backend
+VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_09_00.4.analog-stereo # PipeWire source name
+```
+
+Find the right source name on your machine with:
+```bash
+wpctl status                      # look under "Sources"
+wpctl inspect <id> | grep node.name
+```
+
+If your default source is not "Noise Canceling source" you can set
+`VOICE_STT_INPUT_DEVICE=default` to go back to the system default.
+
+GNOME's microphone OSD still pops up showing "Noise Canceling source"
+whenever you click — it shows the state of the *system default* source, not
+whatever source your app is actually using. Cosmetic, ignore it.
+
 ## Run
 
 ### Quick: one-command start/stop
