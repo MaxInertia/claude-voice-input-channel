@@ -344,7 +344,7 @@ Concrete steps:
 
 Discovered after the channel was already working end-to-end: every other PTT click produced a 1s buffer of pure silence (peak=0.0, rms=0.0) even though the daemon saw `start_recording`/`stop_recording` cleanly and `len(audio)` was correct. Whisper's VAD dropped these silent buffers, so transcripts arrived on odd clicks only.
 
-**Root cause.** GNOME's default PipeWire input is "Noise Canceling source" (node 36), a virtual node whose noise-cancel module actively toggles `Props:mute` between consumer sessions. Under hold-to-talk, the mute state flips true/false once per click, and alternating clicks land inside the muted window for their entire ~1s buffer.
+**Root cause.** On the dev machine, the default PipeWire input source was a user-configured virtual source running a noise-cancellation effect module. That module actively toggled the source's `Props:mute` between consumer sessions. Under hold-to-talk, the mute state flipped true/false once per click, and alternating clicks landed inside the muted window for their entire ~1s buffer. This is a general class of bug for any virtual PipeWire source backed by an effect module (noise cancel, echo cancel, EQ, etc.), not specific to one particular setup.
 
 **Debugging path (what to repeat next time something like this shows up):**
 1. Instrument `stop_recording` to print `peak` and `rms` of the buffer → confirmed alternating zeros in the audio itself, not in Whisper.
@@ -358,7 +358,7 @@ Discovered after the channel was already working end-to-end: every other PTT cli
 
 **Collateral: persistent audio stream.** Even though it wasn't the root cause, the Phase-post refactor kept the daemon's `sd.InputStream` open for its entire lifetime and gated buffering on a `_capturing` flag, replacing the previous open/close-per-click pattern. This is a strictly safer design on any PortAudio/PipeWire system (no more close→reopen races) and is what shipped. Trade-off: the mic is "in use" for the daemon's entire uptime; privacy-wise nothing is buffered unless `_capturing` is true, but GNOME's OSD will still show the mic as active continuously in future OS updates that track that.
 
-**Residual cosmetic issue.** GNOME's microphone OSD still pops on every click showing "Noise Canceling source" muted. That's GNOME watching the system *default* source (still NC), not the source we're actually reading from. Functionally harmless, ignored.
+**Residual cosmetic issue.** On the dev machine, GNOME's microphone OSD still pops on every click showing the virtual noise-cancel source's state — GNOME is watching the system *default* source, not the source the daemon is actually reading from via `PULSE_SOURCE`. Functionally harmless, ignored. Wouldn't reproduce on systems where the default source isn't a virtual node.
 
 ## Sources & references
 

@@ -70,12 +70,12 @@ class Daemon:
         #   1. Open/close races — PortAudio's device release didn't finish
         #      before the next open, so alternating opens delivered a
         #      half-released handle producing all-zero samples.
-        #   2. PipeWire's "Noise Canceling source" virtual node (the usual
-        #      "default" input on GNOME) produced all-zero buffers on
-        #      alternating clients/sessions even with a persistent stream.
-        #      Targeting a plain PipeWire device ("pipewire") or the raw
-        #      ALSA hardware bypasses the noise-canceling effect node
-        #      entirely and delivers real audio on every press.
+        #   2. Virtual PipeWire sources (noise cancellation, echo
+        #      cancellation, EQ, etc.) can toggle their source mute state
+        #      between consumer sessions, producing alternating zero buffers
+        #      even with a persistent stream. Setting `PULSE_SOURCE` to a
+        #      raw hardware input (see scripts/voice-stt-svc) bypasses the
+        #      effect node entirely.
         print(f"[voice-sttd] opening input device: {input_device!r}", flush=True)
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -229,13 +229,13 @@ def main():
     p.add_argument("--compute-type", default="float16", help="float16 (GPU), int8_float16, int8 (CPU)")
     p.add_argument(
         "--input-device",
-        default=os.environ.get("VOICE_STT_INPUT_DEVICE", "pipewire"),
+        default=os.environ.get("VOICE_STT_INPUT_DEVICE", "pulse"),
         help=(
             "Audio input device passed to sounddevice.InputStream(device=...). "
             "Accepts a numeric index or a substring of the device name. "
-            "Default 'pipewire' bypasses GNOME's 'Noise Canceling source' virtual "
-            "node, which produces alternating-zero buffers on some systems. "
-            "Pass empty string or 'default' to use the system default."
+            "Default 'pulse' routes through the pulseaudio compat layer and "
+            "honors PULSE_SOURCE. Pass 'default' to use the system default "
+            "without the PULSE_SOURCE indirection."
         ),
     )
     args = p.parse_args()

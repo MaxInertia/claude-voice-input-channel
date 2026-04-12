@@ -71,36 +71,42 @@ First run of the daemon downloads the model (~1.5GB for `medium.en`) from
 HuggingFace into `~/.cache/huggingface/`. After that it's fully offline — no
 audio, transcripts, or telemetry leave the machine.
 
-### Audio routing (PipeWire + Noise Canceling source)
+### Audio routing
 
-On systems where GNOME's "Noise Canceling source" is the default PipeWire
-input (typical on recent Ubuntu/Fedora GNOME), the noise-cancel module
-actively toggles the source's `Props:mute` between consumer sessions. Under
-hold-to-talk, that produced all-zero 1s buffers on alternating PTT clicks —
-every other click captured silence and Whisper dropped it.
+`voice-stt-svc` routes capture through PortAudio's `pulse` device by default
+(which uses the pipewire-pulse compat layer on PipeWire systems, or
+PulseAudio directly on older setups). With no extra configuration you get
+your system default input source, which works on most systems.
 
-`voice-stt-svc` works around this by routing capture through the
-`pipewire-pulse` compatibility layer with `PULSE_SOURCE` pointed at the raw
-analog input, bypassing the NC node entirely:
+**If you see alternating silent audio buffers** (every other PTT click
+captured silence, transcripts arriving only every other press), your
+default input is probably a **virtual PipeWire source** — noise
+cancellation, echo cancellation, EQ, or similar effect node — whose
+plugin toggles the source's `Props:mute` between consumer sessions. The
+fix is to bypass the virtual node and target the raw hardware input
+directly.
 
-```bash
-# defaults baked into scripts/voice-stt-svc; override if your card differs
-VOICE_STT_INPUT_DEVICE=pulse                                    # PortAudio backend
-VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_09_00.4.analog-stereo # PipeWire source name
-```
+1. Find your raw analog input's `node.name`:
+   ```bash
+   wpctl status                        # look under "Sources"
+   wpctl inspect <id> | grep node.name
+   ```
+   You want the entry that corresponds to your physical sound card
+   (`alsa_input.pci-*` or `alsa_input.usb-*`), not a virtual source.
 
-Find the right source name on your machine with:
-```bash
-wpctl status                      # look under "Sources"
-wpctl inspect <id> | grep node.name
-```
+2. Export the override (e.g. in `~/.bashrc`):
+   ```bash
+   export VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
+   ```
 
-If your default source is not "Noise Canceling source" you can set
-`VOICE_STT_INPUT_DEVICE=default` to go back to the system default.
+3. Restart the daemon:
+   ```bash
+   voice-stt-svc restart
+   ```
 
-GNOME's microphone OSD still pops up showing "Noise Canceling source"
-whenever you click — it shows the state of the *system default* source, not
-whatever source your app is actually using. Cosmetic, ignore it.
+You can also set `VOICE_STT_INPUT_DEVICE` to override the PortAudio backend
+entirely (`pipewire`, `default`, a numeric index, or a device name
+substring). The default `pulse` works for most systems.
 
 ## Run
 
