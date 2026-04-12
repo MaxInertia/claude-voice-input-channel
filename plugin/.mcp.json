@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "voice-stt": {
-      "command": "/home/maxinertia/.bun/bin/bun",
+      "command": "bun",
       "args": [
-        "/home/maxinertia/projects/voice-stt/channel/voice-stt-channel.ts"
+        "${CLAUDE_PLUGIN_ROOT}/channel/voice-stt-channel.ts"
       ]
     }
   }

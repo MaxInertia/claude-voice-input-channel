@@ -1,8 +1,13 @@
 """Push-to-talk listener.
 
-Watches all keyboard input devices for KEY_F20 (an unused F-key that
-input-remapper rewrites the Razer Naga `=` button to). On press → tells the
-voice-sttd daemon to start recording. On release → stop.
+Watches all keyboard input devices for a configured key (default KEY_F20)
+and drives hold-to-talk: press → tells the voice-sttd daemon to start
+recording, release → tells it to stop and transcribe.
+
+The expected setup is to pair this with a key remapper (input-remapper,
+xremap, kmonad, etc.) that rewrites whatever hardware button you actually
+want to press into the target key. KEY_F20 is a sensible default because
+F13–F24 are almost never bound to anything and won't collide with typing.
 
 Requires read access to /dev/input/event*. Easiest fix:
     sudo usermod -aG input $USER

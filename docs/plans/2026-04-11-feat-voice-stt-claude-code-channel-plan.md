@@ -9,7 +9,7 @@ date: 2026-04-11
 
 ## Overview
 
-Build a custom Claude Code [channel](https://code.claude.com/docs/en/channels) that pushes voice transcripts from the existing `voice-stt` daemon into a running Claude Code session as `<channel source="voice-stt">` events. The end result: hold the Razer Naga `=` button, speak, release — and the transcribed utterance arrives in Claude Code as if you'd typed it, while you keep both hands on the keyboard or away from the terminal entirely.
+Build a custom Claude Code [channel](https://code.claude.com/docs/en/channels) that pushes voice transcripts from the existing `voice-stt` daemon into a running Claude Code session as `<channel source="voice-stt">` events. The end result: hold any configured PTT key, speak, release — and the transcribed utterance arrives in Claude Code as if you'd typed it, while you keep both hands on the keyboard or away from the terminal entirely.
 
 This is a thin bridge. The hard parts (mic capture, faster-whisper inference, hotkey wiring) are already done in the existing project. The new piece is a single-file Bun/TypeScript MCP server that:
 
@@ -27,7 +27,7 @@ Channels solved this exact problem upstream: they're a first-class push-into-ses
 
 ## Proposed solution
 
-A single Bun script (`channel/voice-stt-channel.ts`) inside the existing `voice-stt` repo. It speaks MCP over stdio (Claude Code spawns it), and on the side it holds a persistent Unix-socket connection to the running `voice-sttd` daemon.
+A single Bun script (`plugin/channel/voice-stt-channel.ts`) inside the existing `voice-stt` repo. It speaks MCP over stdio (Claude Code spawns it), and on the side it holds a persistent Unix-socket connection to the running `voice-sttd` daemon. (Originally lived at `channel/` at the repo root during Phases 1–3; moved inside `plugin/` as part of the public-push cleanup so that `.mcp.json` can reference it via `${CLAUDE_PLUGIN_ROOT}` instead of an absolute dev-machine path.)
 
 ```
    voice-sttd (Python)
@@ -92,7 +92,7 @@ Node/Bun have built-in `net.connect(path)` for AF_UNIX. The reader needs:
 - **Empty-line filter:** skip blank lines (the daemon emits `text + "\n"` and could in theory emit just `\n`)
 - **No size cap:** utterances are short by nature; Whisper segments are bounded
 
-Pseudocode (`channel/voice-stt-channel.ts`):
+Pseudocode (`plugin/channel/voice-stt-channel.ts`):
 
 ```ts
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -147,7 +147,7 @@ Note: **all logging goes to stderr**, never stdout. Stdout is the MCP transport 
 
 **Phase 1 (superseded in Phase 3):** manually registered under `mcpServers` in `~/.claude.json` (user-level) with absolute paths. Worked fine as a smoke test.
 
-**Phase 3 (current):** the repo is its own marketplace (`.claude-plugin/marketplace.json` at the repo root) listing a single plugin `voice-stt` whose source is `./plugin`. The plugin dir contains `.claude-plugin/plugin.json` and `.mcp.json`; the `.mcp.json` still uses absolute paths back to the dev checkout at `~/projects/voice-stt/channel/voice-stt-channel.ts` so that edits to the channel script take effect immediately without reinstalling the plugin cache. On Phase 3 install, the Phase 1 `~/.claude.json` entry is removed to prevent double registration.
+**Phase 3 (current):** the repo is its own marketplace (`.claude-plugin/marketplace.json` at the repo root) listing a single plugin `voice-stt` whose source is `./plugin`. The plugin dir contains `.claude-plugin/plugin.json`, `.mcp.json`, and the `channel/` directory; `.mcp.json` references the channel entrypoint via `${CLAUDE_PLUGIN_ROOT}/channel/voice-stt-channel.ts` so the plugin is portable across machines. (Phase 3 initially used absolute dev-checkout paths to avoid reinstall-on-edit; those were swapped for `${CLAUDE_PLUGIN_ROOT}` during the public-push cleanup so the repo works out of the box for any cloner, at the cost of needing a `/plugin marketplace update` + reinstall to pick up channel script edits.) On Phase 3 install, the Phase 1 `~/.claude.json` entry is removed to prevent double registration.
 
 Install once inside any Claude Code session:
 
@@ -170,10 +170,10 @@ From Phase 2 onward, the documented daily launch command is `claude-voice`: a wr
 
 ## Acceptance criteria
 
-- [x] `channel/voice-stt-channel.ts` exists and runs cleanly under Bun (`bun channel/voice-stt-channel.ts < /dev/null` exits with no syntax errors when stdin closes)
+- [x] `plugin/channel/voice-stt-channel.ts` exists and runs cleanly under Bun (`bun plugin/channel/voice-stt-channel.ts < /dev/null` exits with no syntax errors when stdin closes)
 - [x] `channel/package.json` declares the `@modelcontextprotocol/sdk` dependency
 - [x] `~/.claude.json` (or a documented patch to it) registers the `voice-stt` MCP server with absolute paths
-- [x] **Golden path:** with `voice-stt-svc start` running, launching Claude Code with `--dangerously-load-development-channels server:voice-stt` and pressing Naga `=` to dictate "list the files in this directory" causes Claude to receive a `<channel source="voice-stt" seq="1" ts="...">list the files in this directory</channel>` event and respond appropriately
+- [x] **Golden path:** with `voice-stt-svc start` running, launching Claude Code with `--dangerously-load-development-channels server:voice-stt` and pressing the configured PTT key to dictate "list the files in this directory" causes Claude to receive a `<channel source="voice-stt" seq="1" ts="...">list the files in this directory</channel>` event and respond appropriately
 - [ ] **Cold-start tolerance:** if the channel server starts before `voice-sttd`, it does not crash; it logs a warning to stderr and reconnects within 5 seconds of the daemon starting
 - [ ] **Mid-session reconnect:** if `voice-stt-svc restart` is run while Claude Code is open, the channel reconnects without requiring a Claude Code restart
 - [x] **Stdout hygiene:** no application logging is written to stdout (verified by reading the channel script and grepping for `console.log`/`process.stdout.write`)
@@ -188,11 +188,11 @@ From Phase 2 onward, the documented daily launch command is `claude-voice`: a wr
 ### Interaction graph
 
 ```
-Naga `=` press
-  → input-remapper (KEY_F20)
+PTT key press
+  → (optional) key remapper → target key (e.g. KEY_F20)
     → voice-stt-ptt (evdev) → voice-sttd start
       → sounddevice mic capture
-Naga `=` release
+PTT key release
   → voice-stt-ptt → voice-sttd stop
     → faster-whisper transcribe
       → broadcast to OUT_SOCK
@@ -255,7 +255,7 @@ Whisper transcribes audio faithfully, including audio the user didn't intend to 
 
 Mitigations:
 
-1. **Hold-to-talk only (already done).** No always-on mic. The user has to physically press the Naga button. Drastically narrows the window.
+1. **Hold-to-talk only (already done).** No always-on mic. The user has to physically hold down a key. Drastically narrows the window.
 2. **Document the risk in the README.** Users should not dictate while audio is playing on speakers, and should be cautious in shared spaces.
 3. **Consider running Claude Code with stricter tool permissions when channels are active.** Out of scope for v1 but worth a follow-up plan: a wrapper script that sets `--allowed-tools` to a safer subset when the voice channel is enabled.
 4. **`instructions` framing.** Tell Claude these are voice transcripts (already in the draft instructions). This isn't a hard guarantee — Claude can still be tricked — but it helps Claude apply more skepticism to surprising commands.
@@ -320,7 +320,7 @@ Concrete steps:
 
 ### Assumptions
 
-- **Linux only.** The entire `voice-stt` project already targets Linux (X11, ALSA/PortAudio, input-remapper, evdev, the Razer Naga setup, the systemd-style svc wrapper). The channel server inherits that constraint and we make no effort to support macOS or Windows in any phase. Any Linux distribution is fine; we don't assume a specific distro, init system, or desktop environment beyond what the existing project already requires.
+- **Linux only.** The entire `voice-stt` project already targets Linux (X11, ALSA/PortAudio, evdev-based PTT listener, the systemd-style svc wrapper). The channel server inherits that constraint and we make no effort to support macOS or Windows in any phase. Any Linux distribution is fine; we don't assume a specific distro, init system, or desktop environment beyond what the existing project already requires.
 - The user is on a personal Claude.ai plan, so the Team/Enterprise `channelsEnabled` org policy gate does not apply. Confirm at implementation time before building.
 - The user runs Claude Code locally in a terminal on the same machine as the daemon — no remote/SSH session, no containerization. (Channels run as a Claude Code subprocess and need stdio access, so this is a hard requirement of the channels feature, not just our choice.)
 

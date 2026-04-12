@@ -5,7 +5,7 @@ Local push-to-talk speech-to-text. faster-whisper on CUDA, X11, pipe-friendly.
 ## Architecture
 
 ```
-   PTT key (Naga `=`, hotkey, etc.)
+   PTT key (hardware button, hotkey, etc.)
         │
         ▼
    voice-stt-ptt (evdev listener)
@@ -114,9 +114,9 @@ voice-stt-svc restart
 Logs land at `/tmp/voice-stt-daemon.log` and `/tmp/voice-stt-ptt.log`. There
 is no autostart on boot — you launch it when you want it.
 
-Once `voice-stt-svc start` reports both running, hold the Razer Naga `=`
-button (or whatever PTT key you've configured) and speak. To consume the
-transcripts, run any consumer in the foreground:
+Once `voice-stt-svc start` reports both running, hold your configured PTT
+key and speak. To consume the transcripts, run any consumer in the
+foreground:
 
 ```bash
 cd ~/projects/voice-stt
@@ -186,40 +186,62 @@ cd ~/projects/voice-stt && uv run voice-stt-ptt
 uv run voice-stt-ptt --key KEY_F19
 ```
 
-### Razer Naga `=` button (current setup)
+### Wiring a hardware button to the PTT listener
 
-The Razer Naga's thumb-grid `=` button is Linux keycode 13 (`KEY_EQUAL`).
-GNOME custom keybindings can't do hold-to-talk (they only fire on press),
-so we route around them:
+`voice-stt-ptt` is agnostic about what sends the key: it watches `KEY_F20`
+(by default) press/release events on every keyboard device it can read.
+Anything that can be made to emit those events on a hold-to-release cycle
+will drive hold-to-talk correctly.
 
-1. **input-remapper** rewrites Naga `=` (code 13) → `KEY_F20`
-2. **voice-stt-ptt** listens for `KEY_F20` press/release across all keyboards
-3. On press → `start`, on release → `stop`
+The typical pattern, for any hardware button you want to use:
 
-The input-remapper preset is at:
-```
-~/.config/input-remapper-2/presets/Razer Razer Naga V2 HyperSpeed/Replay Save.json
-```
+1. **Pick an unused key** as the intermediary. `KEY_F20` is the default;
+   `F13`–`F24` are rarely bound to anything and won't collide with normal
+   typing. Override with `voice-stt-ptt --key KEY_F19`.
+2. **Map your hardware button to that key** using any Linux key remapper:
+   - [input-remapper](https://github.com/sezanzeb/input-remapper) — GUI,
+     handles most gaming mice and keyboards with their own input devices
+   - [xremap](https://github.com/xremap/xremap) — config-file based,
+     Wayland-friendly
+   - [kmonad](https://github.com/kmonad/kmonad) — per-device, layer-aware
+3. **Run `voice-stt-ptt`** (it's started automatically by `voice-stt-svc`)
+   — it'll find the new `KEY_F20` events in the device's capabilities list
+   and start listening.
 
-After editing the preset, reload it:
-```bash
-input-remapper-control --command stop  --device "Razer Razer Naga V2 HyperSpeed"
-input-remapper-control --command start --device "Razer Razer Naga V2 HyperSpeed" --preset "Replay Save"
-```
+**Why not a GNOME custom keybinding?** GNOME only fires keybinding events
+on key *press*, not release — so it can't drive hold-to-talk. The evdev
+listener watches both edges.
 
-See `~/obsidian-vault/docs/razer-naga-button-remapping.md` for the broader
-Naga remapping setup.
+**Why not `xbindkeys`?** It *can* handle release events (see
+`scripts/xbindkeysrc.example` for a Super+Space binding), but under GNOME
+it competes with GNOME's own key handler and the behavior is unreliable.
+The evdev listener sidesteps the whole X11 keybinding stack.
 
-### Alternative: keyboard hotkey via xbindkeys
+#### Example: gaming-mouse thumb button via input-remapper
 
-If you want a regular keyboard PTT hotkey instead (X11 only):
+High-level flow once you have input-remapper installed and your device
+detected:
+
+1. In the input-remapper GUI, create a preset for your mouse
+2. Map the target thumb button's keycode to `KEY_F20` (use `mapping_type:
+   key_macro`, `output_symbol: KEY_F20`)
+3. Save and apply the preset
+4. `voice-stt-svc start` — the PTT listener will pick up `KEY_F20` events
+   and call `voice-stt start` / `voice-stt stop` on press/release
+
+The key press/release pair is all `voice-stt-ptt` needs. The hardware,
+the remapper, and the specific intermediary key are all interchangeable.
+
+### Alternative: keyboard hotkey via xbindkeys (X11 only)
+
+If you want a regular keyboard shortcut as PTT instead of a hardware button:
 ```bash
 cat scripts/xbindkeysrc.example >> ~/.xbindkeysrc
 xbindkeys
 ```
-Default binding: hold **Super+Space**. Note that on GNOME, xbindkeys may
-conflict with GNOME's own keybinding handler — `voice-stt-ptt` is more
-reliable.
+Default binding: hold **Super+Space**. Unreliable under GNOME
+(competes with GNOME's key handler) — the evdev listener path is
+recommended.
 
 ## Model picks (RTX 2070, 8GB)
 
@@ -243,10 +265,10 @@ That's the "pipe to anything" hook — write your own consumer in 5 lines.
 
 ## Claude Code channel
 
-`channel/voice-stt-channel.ts` is a [Claude Code channel](https://code.claude.com/docs/en/channels)
+`plugin/channel/voice-stt-channel.ts` is a [Claude Code channel](https://code.claude.com/docs/en/channels)
 that pushes voice transcripts into a running Claude Code session as
-`<channel source="voice-stt">` events. Hold the Naga `=` button, speak, and
-the transcript arrives in your Claude Code session as if you'd typed it.
+`<channel source="voice-stt">` events. Hold your PTT key, speak, and the
+transcript arrives in your Claude Code session as if you'd typed it.
 
 It's a one-way channel: no reply tool, no permission relay (voice approving
 `Bash`/`Write` would be unsafe — anything within earshot of the mic could
@@ -260,7 +282,7 @@ two-step `/plugin` flow, and launching is a one-command wrapper.
 
 1. Install the channel server's Bun dependencies:
    ```bash
-   cd ~/projects/voice-stt/channel && bun install
+   cd ~/projects/voice-stt/plugin/channel && bun install
    ```
 
 2. Symlink the launcher onto your PATH:
@@ -274,9 +296,12 @@ two-step `/plugin` flow, and launching is a one-command wrapper.
    /plugin marketplace add ~/projects/voice-stt
    /plugin install voice-stt@voice-stt-local
    ```
-   That copies the plugin into `~/.claude/plugins/cache/`. The cached copy's
-   `.mcp.json` still points at the live `channel/voice-stt-channel.ts` in this
-   repo, so `git pull` takes effect immediately without reinstalling.
+   That copies the plugin (including `plugin/channel/`) into
+   `~/.claude/plugins/cache/`. The `.mcp.json` uses `${CLAUDE_PLUGIN_ROOT}`,
+   so the MCP server runs from the cached copy. After editing the channel
+   script locally, refresh the cache with
+   `/plugin marketplace update voice-stt-local` followed by uninstall +
+   reinstall of the plugin.
 
 ### Run
 
@@ -301,8 +326,8 @@ Custom channels aren't on the Anthropic-curated allowlist, so the
 `--dangerously-load-development-channels` flag is required. Claude Code prints
 a confirmation prompt the first time you use the flag per session.
 
-Once Claude Code is up, hold the Naga `=` button (or whatever PTT key you've
-configured), speak, and the transcript arrives in the session.
+Once Claude Code is up, hold your PTT key, speak, and the transcript
+arrives in the session.
 
 #### Raw launch (without the wrapper)
 
