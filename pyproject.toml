@@ -2,6 +2,9 @@
 name = "voice-stt"
 version = "0.1.0"
 description = "Local push-to-talk speech-to-text daemon (faster-whisper + CUDA)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "maxinertia" }]
 requires-python = ">=3.10"
 dependencies = [
     "faster-whisper>=1.0.3",

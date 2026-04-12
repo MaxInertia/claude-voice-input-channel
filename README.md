@@ -1,6 +1,9 @@
 # voice-stt
 
-Local push-to-talk speech-to-text. faster-whisper on CUDA, X11, pipe-friendly.
+Local push-to-talk speech-to-text for Linux. faster-whisper on CUDA,
+hardware PTT via evdev, Unix-socket fanout to any consumer — including a
+[Claude Code channel](https://code.claude.com/docs/en/channels) that
+streams dictated transcripts straight into a running Claude Code session.
 
 ## Architecture
 
@@ -31,8 +34,18 @@ you can run as many consumers in parallel as you want.
 System packages (Ubuntu/Debian):
 
 ```bash
-sudo apt install xbindkeys xdotool xclip libportaudio2
+# required
+sudo apt install libportaudio2
+
+# optional — only if you want the X11-specific consumers and hotkey:
+sudo apt install xdotool xclip xbindkeys
 ```
+
+`libportaudio2` is required by `sounddevice` to open the mic. The X11
+packages are only needed if you want the `voice-stt type` (xdotool) or
+`voice-stt clip` (xclip) consumers, or the keyboard-PTT fallback
+(xbindkeys). The daemon, PTT listener, Claude Code channel, and the
+`listen` consumer all work on any Linux display server without them.
 
 Install `uv` (if you don't already have it):
 

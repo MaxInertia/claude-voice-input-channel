@@ -23,19 +23,33 @@ DAEMON_PAT='voice_stt\.daemon|/voice-sttd'
 PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'
 
 # --- audio routing ---------------------------------------------------------
-# Bypass GNOME's "Noise Canceling source" virtual PipeWire node. That node's
-# noise-cancel module actively toggles Props:mute between consumer sessions,
-# producing alternating all-zero 1s buffers (every other PTT click captured
-# silence). Routing through the pulse compat layer with PULSE_SOURCE pointed
-# at the raw analog input sidesteps the whole effect chain.
+# Defaults route capture through PortAudio's `pulse` device (which uses the
+# pipewire-pulse / PulseAudio compat layer and honors PULSE_SOURCE), with
+# PULSE_SOURCE pointed at a specific raw analog input to bypass GNOME's
+# "Noise Canceling source" virtual PipeWire node. The NC node actively
+# toggles Props:mute between consumer sessions, producing alternating
+# all-zero buffers (every other PTT click captured silence) — bypassing it
+# is the only reliable fix on systems that have it enabled.
 #
-# Override with VOICE_STT_INPUT_DEVICE / VOICE_STT_PULSE_SOURCE if you're on
-# a different machine. Set VOICE_STT_INPUT_DEVICE=default to opt back into
-# the system default source (and whatever effects it runs through).
+# The default node.name below is specific to the author's motherboard. On a
+# different machine, find yours with `wpctl status` + `wpctl inspect <id>`
+# and override via env var:
+#
+#     export VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
+#     voice-stt-svc restart
+#
+# If your system has no noise-cancel / virtual source issues, you can drop
+# the override entirely with `export VOICE_STT_PULSE_SOURCE=` (empty) and
+# the system default source will be used.
+#
+# Set VOICE_STT_INPUT_DEVICE to override the PortAudio backend entirely
+# (e.g. `pipewire`, `default`, a numeric index, or a device name substring).
 : "${VOICE_STT_INPUT_DEVICE:=pulse}"
 : "${VOICE_STT_PULSE_SOURCE:=alsa_input.pci-0000_09_00.4.analog-stereo}"
 export VOICE_STT_INPUT_DEVICE
-export PULSE_SOURCE="$VOICE_STT_PULSE_SOURCE"
+if [[ -n "$VOICE_STT_PULSE_SOURCE" ]]; then
+    export PULSE_SOURCE="$VOICE_STT_PULSE_SOURCE"
+fi
 
 UV="${UV:-$HOME/.local/bin/uv}"
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"

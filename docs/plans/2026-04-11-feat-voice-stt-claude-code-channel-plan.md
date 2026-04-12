@@ -320,7 +320,7 @@ Concrete steps:
 
 ### Assumptions
 
-- **Linux only.** The entire `voice-stt` project already targets Linux (X11, ALSA/PortAudio, evdev-based PTT listener, the systemd-style svc wrapper). The channel server inherits that constraint and we make no effort to support macOS or Windows in any phase. Any Linux distribution is fine; we don't assume a specific distro, init system, or desktop environment beyond what the existing project already requires.
+- **Linux only.** The entire `voice-stt` project already targets Linux (ALSA/PortAudio capture, evdev-based PTT listener, the systemd-style svc wrapper). The core flow works on any Linux display server; only two optional consumers (`voice-stt type`, `voice-stt clip`) and the xbindkeys fallback are X11-specific. The channel server inherits the Linux constraint and we make no effort to support macOS or Windows in any phase.
 - The user is on a personal Claude.ai plan, so the Team/Enterprise `channelsEnabled` org policy gate does not apply. Confirm at implementation time before building.
 - The user runs Claude Code locally in a terminal on the same machine as the daemon — no remote/SSH session, no containerization. (Channels run as a Claude Code subprocess and need stdio access, so this is a hard requirement of the channels feature, not just our choice.)
 
@@ -352,7 +352,7 @@ Discovered after the channel was already working end-to-end: every other PTT cli
 3. Try the raw ALSA hardware device (`hw:1,2`) → rejected 16 kHz (only supports 44.1/48k natively).
 4. Try targeting the `"pipewire"` PortAudio device → still alternating (rules out noise-cancel being a source-selection issue).
 5. `pw-mon --color=never > /tmp/pw-events.log`, grep for `Props:mute` transitions, track per-node → found 6 mute=true events and 20 mute=false events on node 36 during a 6-click test, perfectly lined up with PTT activity.
-6. `wpctl inspect 151` gave the raw analog source's `node.name` = `alsa_input.pci-0000_09_00.4.analog-stereo`.
+6. `wpctl inspect <id>` on the raw analog source gave its `node.name`, which takes the form `alsa_input.pci-<bdf>.analog-stereo`. That's the value to put in `VOICE_STT_PULSE_SOURCE`.
 
 **Fix.** Route capture through the `pulse` PortAudio device (which uses the `pipewire-pulse` compatibility layer) with `PULSE_SOURCE` set to the raw analog source name. This bypasses the NC node entirely. Defaults baked into `scripts/voice-stt-svc`; overridable via `VOICE_STT_INPUT_DEVICE` and `VOICE_STT_PULSE_SOURCE` env vars. After the fix: 6/6 consecutive clicks transcribed cleanly with peak/rms in the expected 0.1–0.4 range.
 
