@@ -1,0 +1,11 @@
+{
+  "name": "voice-stt-channel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code channel that pushes voice-stt transcripts into a running session",
+  "type": "module",
+  "main": "voice-stt-channel.ts",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

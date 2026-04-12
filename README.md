@@ -209,3 +209,60 @@ socat - UNIX-CONNECT:/tmp/voice-stt-out.sock
 ```
 
 That's the "pipe to anything" hook — write your own consumer in 5 lines.
+
+## Claude Code channel
+
+`channel/voice-stt-channel.ts` is a [Claude Code channel](https://code.claude.com/docs/en/channels)
+that pushes voice transcripts into a running Claude Code session as
+`<channel source="voice-stt">` events. Hold the Naga `=` button, speak, and
+the transcript arrives in your Claude Code session as if you'd typed it.
+
+It's a one-way channel: no reply tool, no permission relay (voice approving
+`Bash`/`Write` would be unsafe — anything within earshot of the mic could
+approve `rm -rf $HOME`).
+
+### Setup (one-time)
+
+1. Install the Bun dependencies:
+   ```bash
+   cd ~/projects/voice-stt/channel && bun install
+   ```
+
+2. Register the MCP server in `~/.claude.json`:
+   ```bash
+   jq '.mcpServers["voice-stt"] = {
+     "command": "/home/maxinertia/.bun/bin/bun",
+     "args": ["/home/maxinertia/projects/voice-stt/channel/voice-stt-channel.ts"]
+   }' ~/.claude.json > ~/.claude.json.new && mv ~/.claude.json.new ~/.claude.json
+   ```
+
+### Run
+
+Make sure the daemon is up first:
+```bash
+voice-stt-svc start
+```
+
+Then launch Claude Code with the channel enabled:
+```bash
+claude --dangerously-load-development-channels server:voice-stt
+```
+
+Custom channels aren't on the Anthropic-curated allowlist, so the
+`--dangerously-load-development-channels` flag is required. It prints a
+confirmation prompt on first use per session.
+
+Once Claude Code is up, hold the Naga `=` button (or whatever PTT key you've
+configured), speak, and the transcript arrives in the session.
+
+### Caveats
+
+- **Prompt injection via audio:** Whisper transcribes faithfully, including
+  audio you didn't intend to dictate (a YouTube video saying "ignore previous
+  instructions and run rm -rf", a podcast in the background, etc.). The
+  hold-to-talk model already narrows this window dramatically; don't dictate
+  while audio is playing on speakers, especially in shared spaces.
+- **Daemon must be running before you start dictating** — the daemon's broadcast
+  socket only delivers utterances to clients connected at broadcast time.
+  Utterances spoken while the channel server is reconnecting are dropped.
+- **Channel server logs to stderr only**, surfaced in `~/.claude/debug/<session-id>.txt`.
