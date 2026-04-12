@@ -57,4 +57,4 @@ if [[ "$ptt_state" != "running" ]]; then
 fi
 
 echo "voice-stt daemon: running — launching Claude Code with voice-stt channel"
-exec "$CLAUDE" --dangerously-load-development-channels server:voice-stt "$@"
+exec "$CLAUDE" --dangerously-load-development-channels plugin:voice-stt@voice-stt-local "$@"

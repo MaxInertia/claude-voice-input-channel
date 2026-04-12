@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "voice-stt": {
+      "command": "/home/maxinertia/.bun/bin/bun",
+      "args": [
+        "/home/maxinertia/projects/voice-stt/channel/voice-stt-channel.ts"
+      ]
+    }
+  }
+}

@@ -221,20 +221,31 @@ It's a one-way channel: no reply tool, no permission relay (voice approving
 `Bash`/`Write` would be unsafe — anything within earshot of the mic could
 approve `rm -rf $HOME`).
 
+This repo doubles as a [personal marketplace](https://code.claude.com/docs/en/plugin-marketplaces)
+(`voice-stt-local`) hosting a single plugin (`voice-stt`). Installation is a
+two-step `/plugin` flow, and launching is a one-command wrapper.
+
 ### Setup (one-time)
 
-1. Install the Bun dependencies:
+1. Install the channel server's Bun dependencies:
    ```bash
    cd ~/projects/voice-stt/channel && bun install
    ```
 
-2. Register the MCP server in `~/.claude.json`:
+2. Symlink the launcher onto your PATH:
    ```bash
-   jq '.mcpServers["voice-stt"] = {
-     "command": "/home/maxinertia/.bun/bin/bun",
-     "args": ["/home/maxinertia/projects/voice-stt/channel/voice-stt-channel.ts"]
-   }' ~/.claude.json > ~/.claude.json.new && mv ~/.claude.json.new ~/.claude.json
+   ln -sf ~/projects/voice-stt/scripts/claude-voice ~/bin/claude-voice
    ```
+
+3. Inside any Claude Code session, add this repo as a marketplace and install
+   the plugin:
+   ```
+   /plugin marketplace add ~/projects/voice-stt
+   /plugin install voice-stt@voice-stt-local
+   ```
+   That copies the plugin into `~/.claude/plugins/cache/`. The cached copy's
+   `.mcp.json` still points at the live `channel/voice-stt-channel.ts` in this
+   repo, so `git pull` takes effect immediately without reinstalling.
 
 ### Run
 
@@ -243,9 +254,9 @@ Start the daemon once:
 voice-stt-svc start
 ```
 
-Then launch Claude Code via the `claude-voice` wrapper:
+Then launch Claude Code via `claude-voice`:
 ```bash
-claude-voice           # any args are forwarded to claude
+claude-voice           # any extra args are forwarded to `claude`
 ```
 
 The wrapper:
@@ -253,12 +264,7 @@ The wrapper:
    it refuses to launch and tells you to run `voice-stt-svc start` — it will
    **not** auto-start the daemon.
 2. Warns (but proceeds) if the PTT listener is down.
-3. `exec`s `claude --dangerously-load-development-channels server:voice-stt "$@"`.
-
-Symlink it onto your PATH once:
-```bash
-ln -sf ~/projects/voice-stt/scripts/claude-voice ~/bin/claude-voice
-```
+3. `exec`s `claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local "$@"`.
 
 Custom channels aren't on the Anthropic-curated allowlist, so the
 `--dangerously-load-development-channels` flag is required. Claude Code prints
@@ -271,7 +277,7 @@ configured), speak, and the transcript arrives in the session.
 
 If you prefer to run `claude` directly:
 ```bash
-claude --dangerously-load-development-channels server:voice-stt
+claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local
 ```
 You lose the daemon health check but the channel works the same.
 

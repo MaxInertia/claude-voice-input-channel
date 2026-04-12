@@ -6,3 +6,5 @@ dist/
 build/
 .uv-cache/
 node_modules/
+.env
+.env.*

@@ -44,7 +44,7 @@ A single Bun script (`channel/voice-stt-channel.ts`) inside the existing `voice-
 
 **Lifecycle separation:** the channel server does **not** start, stop, or own the STT daemon. The user starts the daemon manually with `voice-stt-svc start` (or it's already running) before launching Claude Code. The channel just connects, reads, and reconnects with backoff if the daemon isn't there yet or disappears mid-session. This keeps responsibilities clean and avoids the channel inheriting CUDA-init failures from the daemon.
 
-**Configuration:** registered in `~/.claude.json` (user-level) so it works regardless of which directory Claude Code is launched from. Activated per session with `claude --dangerously-load-development-channels server:voice-stt`.
+**Configuration:** shipped as a Claude Code plugin inside a personal marketplace (`voice-stt-local`) whose root is this repo. Users install with `/plugin marketplace add ~/projects/voice-stt` + `/plugin install voice-stt@voice-stt-local`, and the daily launch command is `claude-voice` (a wrapper that health-checks the daemon and then `exec`s `claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local`).
 
 ## Technical approach
 
@@ -145,28 +145,28 @@ Note: **all logging goes to stderr**, never stdout. Stdout is the MCP transport 
 
 ### MCP config
 
-Add to `~/.claude.json` (user-level) so the channel is available from any working directory. Use absolute paths because Claude Code resolves the command from the project's working directory, not the script's:
+**Phase 1 (superseded in Phase 3):** manually registered under `mcpServers` in `~/.claude.json` (user-level) with absolute paths. Worked fine as a smoke test.
 
-```json
-{
-  "mcpServers": {
-    "voice-stt": {
-      "command": "/home/maxinertia/.bun/bin/bun",
-      "args": ["/home/maxinertia/projects/voice-stt/channel/voice-stt-channel.ts"]
-    }
-  }
-}
+**Phase 3 (current):** the repo is its own marketplace (`.claude-plugin/marketplace.json` at the repo root) listing a single plugin `voice-stt` whose source is `./plugin`. The plugin dir contains `.claude-plugin/plugin.json` and `.mcp.json`; the `.mcp.json` still uses absolute paths back to the dev checkout at `~/projects/voice-stt/channel/voice-stt-channel.ts` so that edits to the channel script take effect immediately without reinstalling the plugin cache. On Phase 3 install, the Phase 1 `~/.claude.json` entry is removed to prevent double registration.
+
+Install once inside any Claude Code session:
+
+```
+/plugin marketplace add ~/projects/voice-stt
+/plugin install voice-stt@voice-stt-local
 ```
 
 ### Launching
 
-Custom channels aren't on the Anthropic-curated allowlist, so the raw launch command is:
+Custom channels aren't on the Anthropic-curated allowlist, so the `--dangerously-load-development-channels` flag is always required. The raw form changed between phases:
 
-```bash
-claude --dangerously-load-development-channels server:voice-stt
-```
+| Phase | Raw launch command |
+| --- | --- |
+| 1 | `claude --dangerously-load-development-channels server:voice-stt` (bare MCP server registered in `~/.claude.json`) |
+| 2 | same — wrapper was added, raw form unchanged |
+| 3 | `claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local` (sourced from the plugin inside the personal marketplace) |
 
-This prints a confirmation prompt on first use of the flag per session. In Phase 1 the user runs this directly to validate the golden path. Starting in Phase 2, the documented launch command is `claude-voice` (a thin wrapper that runs the daemon health check, then `exec`s the above with any extra args forwarded). In Phase 3, the wrapper is replaced by a `/voice-stt:status` slash command shipped with the plugin.
+From Phase 2 onward, the documented daily launch command is `claude-voice`: a wrapper that runs the daemon health check and then `exec`s the raw form with any extra args forwarded. Phase 3 points the wrapper at the plugin form. A future `/voice-stt:status` slash command shipped inside the plugin could subsume the wrapper's health check, but that's deferred past Phase 3 — the shell wrapper is simpler and works today.
 
 ## Acceptance criteria
 
@@ -181,7 +181,7 @@ This prints a confirmation prompt on first use of the flag per session. In Phase
 - [x] Sequence numbers monotonically increase across the lifetime of the channel process (resets on Claude Code restart, which is fine)
 - [x] **(Phase 2)** `claude-voice` wrapper exists, performs the daemon health check, refuses to launch with a clear error if the daemon is down, and forwards extra args through to `claude`
 - [x] **(Phase 2)** README's primary documented launch command is `claude-voice`, not the raw `--dangerously-load-development-channels` form
-- [ ] **(Phase 3)** Channel is installable via `/plugin install voice-stt@<personal-marketplace>` from a personal marketplace, and the README documents that as the primary install path
+- [x] **(Phase 3)** Channel is installable via `/plugin install voice-stt@voice-stt-local` from a personal marketplace rooted at this repo, and the README documents that as the primary install path
 
 ## System-wide impact
 
@@ -326,7 +326,7 @@ Concrete steps:
 
 ### Dependencies
 
-- **Bun** (already installed: `1.3.11` at `/home/maxinertia/.bun/bin/bun`)
+- **Bun** (already installed: `1.3.11` at `~/.bun/bin/bun`)
 - **`@modelcontextprotocol/sdk`** (~5MB, fetched via `bun add` on first setup)
 - **Claude Code v2.1.80+** for the channels feature; **v2.1.81+** if we ever add permission relay (we won't). Currently running `2.1.104` — well above the floor.
 - **Existing voice-stt project** running and accessible at `/tmp/voice-stt-out.sock`

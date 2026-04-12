@@ -1,0 +1,8 @@
+{
+  "name": "voice-stt",
+  "description": "Pushes local Whisper voice transcripts into Claude Code as <channel source=\"voice-stt\"> events via the voice-sttd daemon",
+  "version": "0.1.0",
+  "author": {
+    "name": "maxinertia"
+  }
+}
