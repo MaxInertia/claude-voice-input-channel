@@ -238,22 +238,42 @@ approve `rm -rf $HOME`).
 
 ### Run
 
-Make sure the daemon is up first:
+Start the daemon once:
 ```bash
 voice-stt-svc start
 ```
 
-Then launch Claude Code with the channel enabled:
+Then launch Claude Code via the `claude-voice` wrapper:
 ```bash
-claude --dangerously-load-development-channels server:voice-stt
+claude-voice           # any args are forwarded to claude
+```
+
+The wrapper:
+1. Verifies the daemon is running (via `voice-stt-svc status`). If it's down,
+   it refuses to launch and tells you to run `voice-stt-svc start` — it will
+   **not** auto-start the daemon.
+2. Warns (but proceeds) if the PTT listener is down.
+3. `exec`s `claude --dangerously-load-development-channels server:voice-stt "$@"`.
+
+Symlink it onto your PATH once:
+```bash
+ln -sf ~/projects/voice-stt/scripts/claude-voice ~/bin/claude-voice
 ```
 
 Custom channels aren't on the Anthropic-curated allowlist, so the
-`--dangerously-load-development-channels` flag is required. It prints a
-confirmation prompt on first use per session.
+`--dangerously-load-development-channels` flag is required. Claude Code prints
+a confirmation prompt the first time you use the flag per session.
 
 Once Claude Code is up, hold the Naga `=` button (or whatever PTT key you've
 configured), speak, and the transcript arrives in the session.
+
+#### Raw launch (without the wrapper)
+
+If you prefer to run `claude` directly:
+```bash
+claude --dangerously-load-development-channels server:voice-stt
+```
+You lose the daemon health check but the channel works the same.
 
 ### Caveats
 

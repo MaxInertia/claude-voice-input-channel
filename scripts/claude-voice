@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# claude-voice — launch Claude Code with the voice-stt channel enabled.
+#
+# Verifies the voice-stt daemon is running before launching, so you get a
+# clear error instead of a silently-reconnecting channel server that never
+# delivers any transcripts.
+#
+# Does NOT auto-start the daemon — lifecycle management lives in
+# voice-stt-svc. If the daemon is down, this script tells you how to start
+# it and exits.
+#
+# Any extra args are forwarded to `claude`.
+
+set -euo pipefail
+
+SVC=${VOICE_STT_SVC:-voice-stt-svc}
+CLAUDE=${CLAUDE_BIN:-claude}
+
+if ! command -v "$SVC" >/dev/null 2>&1; then
+    cat >&2 <<EOF
+error: '$SVC' not found on PATH.
+       Symlink it once with:
+           ln -sf ~/projects/voice-stt/scripts/voice-stt-svc ~/bin/voice-stt-svc
+EOF
+    exit 1
+fi
+
+if ! command -v "$CLAUDE" >/dev/null 2>&1; then
+    echo "error: '$CLAUDE' not found on PATH" >&2
+    exit 1
+fi
+
+status_output=$("$SVC" status 2>&1 || true)
+daemon_state=$(printf '%s\n' "$status_output" | awk '/^daemon:/ {print $2; exit}')
+ptt_state=$(printf '%s\n' "$status_output" | awk '/^ptt:/ {print $2; exit}')
+
+if [[ "$daemon_state" != "running" ]]; then
+    cat >&2 <<EOF
+error: voice-stt daemon is not running — refusing to launch Claude Code with
+       the voice-stt channel, because it would have no transcripts to deliver.
+
+       current status from '$SVC status':
+$(printf '%s\n' "$status_output" | sed 's/^/         /')
+
+       start it with:
+           $SVC start
+
+       then rerun:
+           $0 $*
+EOF
+    exit 1
+fi
+
+if [[ "$ptt_state" != "running" ]]; then
+    echo "warning: voice-stt-ptt listener is not running — your PTT key will not trigger recording" >&2
+    echo "         run '$SVC start' to bring it up" >&2
+fi
+
+echo "voice-stt daemon: running — launching Claude Code with voice-stt channel"
+exec "$CLAUDE" --dangerously-load-development-channels server:voice-stt "$@"

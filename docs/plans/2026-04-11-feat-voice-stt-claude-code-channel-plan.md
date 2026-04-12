@@ -170,17 +170,17 @@ This prints a confirmation prompt on first use of the flag per session. In Phase
 
 ## Acceptance criteria
 
-- [ ] `channel/voice-stt-channel.ts` exists and runs cleanly under Bun (`bun channel/voice-stt-channel.ts < /dev/null` exits with no syntax errors when stdin closes)
-- [ ] `channel/package.json` declares the `@modelcontextprotocol/sdk` dependency
-- [ ] `~/.claude.json` (or a documented patch to it) registers the `voice-stt` MCP server with absolute paths
-- [ ] **Golden path:** with `voice-stt-svc start` running, launching Claude Code with `--dangerously-load-development-channels server:voice-stt` and pressing Naga `=` to dictate "list the files in this directory" causes Claude to receive a `<channel source="voice-stt" seq="1" ts="...">list the files in this directory</channel>` event and respond appropriately
+- [x] `channel/voice-stt-channel.ts` exists and runs cleanly under Bun (`bun channel/voice-stt-channel.ts < /dev/null` exits with no syntax errors when stdin closes)
+- [x] `channel/package.json` declares the `@modelcontextprotocol/sdk` dependency
+- [x] `~/.claude.json` (or a documented patch to it) registers the `voice-stt` MCP server with absolute paths
+- [x] **Golden path:** with `voice-stt-svc start` running, launching Claude Code with `--dangerously-load-development-channels server:voice-stt` and pressing Naga `=` to dictate "list the files in this directory" causes Claude to receive a `<channel source="voice-stt" seq="1" ts="...">list the files in this directory</channel>` event and respond appropriately
 - [ ] **Cold-start tolerance:** if the channel server starts before `voice-sttd`, it does not crash; it logs a warning to stderr and reconnects within 5 seconds of the daemon starting
 - [ ] **Mid-session reconnect:** if `voice-stt-svc restart` is run while Claude Code is open, the channel reconnects without requiring a Claude Code restart
-- [ ] **Stdout hygiene:** no application logging is written to stdout (verified by reading the channel script and grepping for `console.log`/`process.stdout.write`)
-- [ ] README documents: install steps, MCP config snippet, the launch command, and the security notes below
-- [ ] Sequence numbers monotonically increase across the lifetime of the channel process (resets on Claude Code restart, which is fine)
-- [ ] **(Phase 2)** `claude-voice` wrapper exists, performs the daemon health check, refuses to launch with a clear error if the daemon is down, and forwards extra args through to `claude`
-- [ ] **(Phase 2)** README's primary documented launch command is `claude-voice`, not the raw `--dangerously-load-development-channels` form
+- [x] **Stdout hygiene:** no application logging is written to stdout (verified by reading the channel script and grepping for `console.log`/`process.stdout.write`)
+- [x] README documents: install steps, MCP config snippet, the launch command, and the security notes below
+- [x] Sequence numbers monotonically increase across the lifetime of the channel process (resets on Claude Code restart, which is fine)
+- [x] **(Phase 2)** `claude-voice` wrapper exists, performs the daemon health check, refuses to launch with a clear error if the daemon is down, and forwards extra args through to `claude`
+- [x] **(Phase 2)** README's primary documented launch command is `claude-voice`, not the raw `--dangerously-load-development-channels` form
 - [ ] **(Phase 3)** Channel is installable via `/plugin install voice-stt@<personal-marketplace>` from a personal marketplace, and the README documents that as the primary install path
 
 ## System-wide impact
