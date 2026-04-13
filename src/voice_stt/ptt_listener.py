@@ -54,11 +54,14 @@ def _find_keyboards(trigger: int) -> list[evdev.InputDevice]:
 
 
 def main():
+    import os
+
     p = argparse.ArgumentParser()
     p.add_argument(
         "--key",
-        default="KEY_F20",
-        help="evdev key name to watch for press/release (default: KEY_F20)",
+        default=os.environ.get("VOICE_STT_PTT_KEY", "KEY_F20"),
+        help="evdev key name to watch for press/release. "
+             "Env: VOICE_STT_PTT_KEY. Default: KEY_F20.",
     )
     args = p.parse_args()
 

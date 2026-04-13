@@ -22,34 +22,58 @@ OUT_SOCK="/tmp/voice-stt-out.sock"
 DAEMON_PAT='voice_stt\.daemon|/voice-sttd'
 PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'
 
+# --- .env loading ----------------------------------------------------------
+# Load $PROJECT_DIR/.env if present. Shell env vars already exported take
+# precedence — .env only fills in values that aren't already set. This means
+# one-off overrides work without editing .env:
+#
+#     VOICE_STT_MODEL=small.en voice-stt-svc restart
+#
+# See .env.example for the full list of supported keys.
+ENV_FILE="$PROJECT_DIR/.env"
+if [[ -f "$ENV_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # skip comments and blank lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        # strip optional leading `export `
+        line="${line#export }"
+        # split on first =
+        key="${line%%=*}"
+        val="${line#*=}"
+        # trim whitespace around key
+        key="${key// /}"
+        key="${key//$'\t'/}"
+        [[ -z "$key" ]] && continue
+        # strip surrounding quotes from value
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        # only set if not already in the shell environment
+        if [[ -z "${!key+x}" ]]; then
+            export "$key=$val"
+        fi
+    done < "$ENV_FILE"
+fi
+
 # --- audio routing ---------------------------------------------------------
-# Defaults route capture through PortAudio's `pulse` device (which uses the
-# pipewire-pulse / PulseAudio compat layer and honors PULSE_SOURCE). With no
-# extra configuration the daemon will use your system default input source,
-# which works on most systems.
-#
-# If you see alternating silent audio buffers (every other PTT click
-# captured silence), your default input is probably a virtual PipeWire
-# source (noise cancellation, echo cancellation, etc.) whose effect module
-# toggles the source mute state between consumer sessions. Bypass it by
-# pointing `VOICE_STT_PULSE_SOURCE` at the raw hardware input's node.name.
-# Find yours with:
-#
-#     wpctl status                        # look under "Sources"
-#     wpctl inspect <id> | grep node.name
-#
-# Then export the override, e.g. in ~/.bashrc:
-#
-#     export VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
-#
-# Set VOICE_STT_INPUT_DEVICE to override the PortAudio backend entirely
-# (e.g. `pipewire`, `default`, a numeric index, or a device name substring).
+# Defaults fall back to `pulse` (pipewire-pulse / PulseAudio compat layer,
+# honors PULSE_SOURCE). Override via .env or shell env. If you see
+# alternating silent audio buffers, see README → Advanced & troubleshooting
+# → Audio routing.
 : "${VOICE_STT_INPUT_DEVICE:=pulse}"
 : "${VOICE_STT_PULSE_SOURCE:=}"
 export VOICE_STT_INPUT_DEVICE
 if [[ -n "$VOICE_STT_PULSE_SOURCE" ]]; then
     export PULSE_SOURCE="$VOICE_STT_PULSE_SOURCE"
 fi
+
+# --- model settings (read by the Python daemon via os.environ) -------------
+# Forward these so they're visible to child processes. Daemon argparse
+# defaults read from these env vars.
+export VOICE_STT_MODEL="${VOICE_STT_MODEL:-medium.en}"
+export VOICE_STT_COMPUTE_DEVICE="${VOICE_STT_COMPUTE_DEVICE:-cuda}"
+export VOICE_STT_COMPUTE_TYPE="${VOICE_STT_COMPUTE_TYPE:-float16}"
+export VOICE_STT_PTT_KEY="${VOICE_STT_PTT_KEY:-KEY_F20}"
 
 UV="${UV:-$HOME/.local/bin/uv}"
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"

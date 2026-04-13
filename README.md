@@ -67,6 +67,19 @@ cd ~/projects/voice-stt
 uv sync
 ```
 
+Configuration is read from a `.env` file at the repo root. Copy the example
+and edit if you want to change the defaults (model, compute type, input
+device, PTT key — all documented inline in the example):
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+The defaults in `.env.example` work out of the box for an 8 GB NVIDIA GPU
+on a modern Linux desktop with PipeWire. You can skip editing `.env`
+entirely and the daemon will run with the builtin defaults.
+
 First run of the daemon downloads the model (~1.5GB for `medium.en`) from
 HuggingFace into `~/.cache/huggingface/`. After that it's fully offline — no
 audio, transcripts, or telemetry leave the machine.

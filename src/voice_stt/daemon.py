@@ -223,10 +223,28 @@ def _parse_input_device(raw: str | None) -> str | int | None:
 
 
 def main():
+    # CLI args default to env vars (populated from .env via voice-stt-svc),
+    # which in turn fall back to hardcoded defaults. Precedence, highest to
+    # lowest: CLI arg > shell env > .env file > builtin default.
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="medium.en", help="faster-whisper model name (e.g. small.en, medium.en, large-v3)")
-    p.add_argument("--device", default="cuda")
-    p.add_argument("--compute-type", default="float16", help="float16 (GPU), int8_float16, int8 (CPU)")
+    p.add_argument(
+        "--model",
+        default=os.environ.get("VOICE_STT_MODEL", "medium.en"),
+        help="faster-whisper model name (e.g. small.en, medium.en, large-v3). "
+             "Env: VOICE_STT_MODEL.",
+    )
+    p.add_argument(
+        "--device",
+        default=os.environ.get("VOICE_STT_COMPUTE_DEVICE", "cuda"),
+        help="CTranslate2 inference device: cuda or cpu. "
+             "Env: VOICE_STT_COMPUTE_DEVICE.",
+    )
+    p.add_argument(
+        "--compute-type",
+        default=os.environ.get("VOICE_STT_COMPUTE_TYPE", "float16"),
+        help="CTranslate2 compute type: float16 (GPU), int8_float16, int8 (CPU). "
+             "Env: VOICE_STT_COMPUTE_TYPE.",
+    )
     p.add_argument(
         "--input-device",
         default=os.environ.get("VOICE_STT_INPUT_DEVICE", "pulse"),
@@ -235,7 +253,8 @@ def main():
             "Accepts a numeric index or a substring of the device name. "
             "Default 'pulse' routes through the pulseaudio compat layer and "
             "honors PULSE_SOURCE. Pass 'default' to use the system default "
-            "without the PULSE_SOURCE indirection."
+            "without the PULSE_SOURCE indirection. "
+            "Env: VOICE_STT_INPUT_DEVICE."
         ),
     )
     args = p.parse_args()
