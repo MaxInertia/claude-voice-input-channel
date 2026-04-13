@@ -230,7 +230,7 @@ class Daemon:
 
     # ---- control socket ----
 
-    def _handle_ctrl(self, conn: socket.socket):
+    def _handle_ctrl(self, conn: socket.socket) -> None:
         try:
             data = conn.recv(64).decode("utf-8", errors="ignore").strip()
             if data == "start":
@@ -239,17 +239,6 @@ class Daemon:
             elif data == "stop":
                 self.stop_recording()
                 conn.sendall(b"ok\n")
-            elif data == "toggle":
-                if self._capturing:
-                    self.stop_recording()
-                else:
-                    self.start_recording()
-                conn.sendall(b"ok\n")
-            elif data == "status":
-                conn.sendall(b"recording\n" if self._capturing else b"idle\n")
-            elif data == "quit":
-                conn.sendall(b"bye\n")
-                os._exit(0)
             else:
                 conn.sendall(b"unknown\n")
         finally:

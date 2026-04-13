@@ -1,13 +1,12 @@
 # Push-to-talk: hold Super+space to dictate.
 # Append these lines to ~/.xbindkeysrc, then run: xbindkeys -p
 # (or restart xbindkeys: pkill xbindkeys; xbindkeys)
+#
+# The evdev listener (voice-stt-ptt) is the preferred PTT path — this
+# xbindkeys recipe is only useful as a keyboard-hotkey fallback on X11.
 
 "voice-stt start"
     Mod4 + space
 
 "voice-stt stop"
     Release + Mod4 + space
-
-# Alternative: F9 toggle (press once to start, again to stop)
-# "voice-stt toggle"
-#     F9
