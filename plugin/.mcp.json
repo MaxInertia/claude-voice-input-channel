@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "voice-stt": {
+    "dictate": {
       "command": "bun",
       "args": [
         "${CLAUDE_PLUGIN_ROOT}/channel/voice-stt-channel.ts"
