@@ -1,11 +1,23 @@
 """Voice STT daemon.
 
-Holds a faster-whisper model in memory. Listens on a control Unix socket for
-start/stop commands. While "started", captures mic audio. On stop, transcribes
-the buffered audio and broadcasts each line of text to all clients connected
-to the output Unix socket.
+Holds a faster-whisper model in memory, captures mic audio via PortAudio,
+and writes transcribed utterances to stdout, one per line.
 
-Output protocol: newline-delimited UTF-8 text. One utterance per line.
+This is intended to be spawned as a subprocess by the Claude Code channel
+plugin (`plugin/channel/voice-stt-channel.ts`). The channel plugin writes
+command lines to this process's stdin (`start\\n` / `stop\\n`), reads
+transcripts from its stdout, and forwards stderr to Claude Code's debug
+log. The daemon exits cleanly on stdin EOF.
+
+Protocol
+--------
+stdin  : one command per line. Commands: ``start``, ``stop``. On EOF the
+         daemon cleans up and exits with code 0.
+stdout : one UTF-8 transcript per line. Each line is a complete utterance
+         produced by a single ``start``/``stop`` cycle. No framing header.
+stderr : everything else (log lines, errors, model load messages).
+exit   : 0 on clean shutdown (stdin EOF), 2 on singleton lock contention
+         (another daemon is already running), nonzero on startup failure.
 """
 
 from __future__ import annotations
@@ -14,7 +26,6 @@ import argparse
 import ctypes
 import os
 import queue
-import socket
 import sys
 import threading
 from pathlib import Path
@@ -42,7 +53,12 @@ _preload_cuda_libs()
 import numpy as np
 import sounddevice as sd
 
-from . import CTRL_SOCK, OUT_SOCK, SAMPLE_RATE, SOCKET_DIR
+from . import SAMPLE_RATE
+
+
+def _log(msg: str) -> None:
+    """Log to stderr. Stdout is reserved for transcripts."""
+    print(f"[voice-sttd] {msg}", flush=True, file=sys.stderr)
 
 
 class Daemon:
@@ -53,34 +69,23 @@ class Daemon:
         compute_type: str,
         input_device: str | int | None,
     ):
-        from faster_whisper import WhisperModel  # imported lazily so --help is fast
+        from faster_whisper import WhisperModel  # lazy import keeps --help fast
 
-        print(f"[voice-sttd] loading model={model_name} device={device} compute={compute_type}", flush=True)
+        _log(f"loading model={model_name} device={device} compute={compute_type}")
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
-        print("[voice-sttd] model ready", flush=True)
+        _log("model ready")
 
         self._lock = threading.Lock()
         self._capturing = False
         self._frames: list[np.ndarray] = []
 
-        # Persistent input stream opened at startup and kept open for the
-        # daemon lifetime. The callback gates on self._capturing so we only
-        # buffer frames while a PTT press is active, but the stream itself
-        # never reopens. This avoids two independent bugs we hit on PipeWire:
-        #
-        #   1. Open/close races — PortAudio's device release didn't finish
-        #      before the next open, so alternating opens delivered a
-        #      half-released handle producing all-zero samples.
-        #   2. Virtual PipeWire sources (noise cancellation, echo
-        #      cancellation, EQ, etc.) can toggle their source mute state
-        #      between consumer sessions, producing alternating zero buffers
-        #      even with a persistent stream. Setting `PULSE_SOURCE` to a
-        #      raw hardware input (see scripts/voice-stt-svc) bypasses the
-        #      effect node entirely.
-        print(
-            f"[voice-sttd] opening input device: {input_device!r}"
-            f" (PULSE_SOURCE={os.environ.get('PULSE_SOURCE', '<unset>')!r})",
-            flush=True,
+        # Persistent input stream — kept open for the daemon lifetime and
+        # gated by self._capturing. See the comments in the Phase 2 refactor
+        # of the review-fixes branch for the bugs this prevents (open/close
+        # races and virtual-source mute toggling).
+        _log(
+            f"opening input device: {input_device!r}"
+            f" (PULSE_SOURCE={os.environ.get('PULSE_SOURCE', '<unset>')!r})"
         )
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -90,17 +95,11 @@ class Daemon:
             device=input_device,
         )
         self._stream.start()
-        print("[voice-sttd] audio input stream open (persistent)", flush=True)
+        _log("audio input stream open (persistent)")
 
-        self._out_clients: list[socket.socket] = []
-        self._out_lock = threading.Lock()
-
-        # Background transcription worker. stop_recording enqueues a
-        # captured audio array and returns immediately, so ctrl-handler
-        # threads never block on Whisper decode. A single worker drains
-        # the queue — serializing transcriptions is what we want anyway,
-        # because faster-whisper/CTranslate2 isn't safe for concurrent
-        # calls on one model instance.
+        # Background transcription worker. stop_recording enqueues captured
+        # audio and returns immediately so the stdin reader never blocks on
+        # Whisper decode.
         self._transcribe_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
         self._transcribe_thread = threading.Thread(
             target=self._transcribe_worker,
@@ -114,39 +113,29 @@ class Daemon:
     def _audio_cb(self, indata, frames, time, status):
         if status:
             print(f"[voice-sttd] audio status: {status}", file=sys.stderr, flush=True)
-        # The stream is always open; only buffer frames while capturing. No
-        # lock here — _capturing is a single bool read, and _frames is only
-        # touched by this callback and the ctrl threads in start/stop which
-        # do so while _capturing is False.
         if self._capturing:
             self._frames.append(indata[:, 0].copy())
 
-    def start_recording(self):
+    def start_recording(self) -> None:
         with self._lock:
             if self._capturing:
                 return
             self._frames = []
             self._capturing = True
-        print("[voice-sttd] recording: ON", flush=True)
+        _log("recording: ON")
 
-    def stop_recording(self):
+    def stop_recording(self) -> None:
         with self._lock:
             if not self._capturing:
                 return
             self._capturing = False
             audio = np.concatenate(self._frames) if self._frames else np.zeros(0, dtype=np.float32)
             self._frames = []
-        print(f"[voice-sttd] recording: OFF ({len(audio)/SAMPLE_RATE:.2f}s) — queued", flush=True)
-        # Hand off to the background transcription worker and return fast.
-        # This keeps ctrl handler threads non-blocking so a rapid press/
-        # release/press sequence never loses audio due to the second press
-        # waiting on the first utterance's Whisper decode.
+        _log(f"recording: OFF ({len(audio)/SAMPLE_RATE:.2f}s) — queued")
         try:
             self._transcribe_queue.put_nowait(audio)
         except queue.Full:
-            # Unusual — means the worker is pathologically behind. Drop
-            # the oldest pending segment to make room for the new one so
-            # we prefer recent speech to stale.
+            # Pathologically behind worker — drop oldest, prefer recent speech.
             try:
                 self._transcribe_queue.get_nowait()
             except queue.Empty:
@@ -154,23 +143,21 @@ class Daemon:
             try:
                 self._transcribe_queue.put_nowait(audio)
             except queue.Full:
-                print("[voice-sttd] transcription queue full, dropping audio", file=sys.stderr, flush=True)
+                _log("transcription queue full, dropping audio")
 
     def _transcribe_worker(self) -> None:
         while True:
             audio = self._transcribe_queue.get()
             try:
-                self._transcribe_and_broadcast(audio)
+                self._transcribe_and_emit(audio)
             except Exception as e:
-                # Never let a single bad transcription kill the worker —
-                # log and keep draining.
-                print(f"[voice-sttd] transcription error: {e}", file=sys.stderr, flush=True)
+                _log(f"transcription error: {e}")
             finally:
                 self._transcribe_queue.task_done()
 
-    def _transcribe_and_broadcast(self, audio: np.ndarray) -> None:
+    def _transcribe_and_emit(self, audio: np.ndarray) -> None:
         if audio.size < SAMPLE_RATE // 4:  # <0.25s, skip
-            print("[voice-sttd] audio too short, skipping", flush=True)
+            _log("audio too short, skipping")
             return
         segments, info = self.model.transcribe(
             audio,
@@ -178,116 +165,50 @@ class Daemon:
             vad_filter=True,
             beam_size=5,
         )
-        # Concatenate all segments from one recording into a single broadcast
-        # line. In PTT mode, one button press is one thought — splitting a
-        # long utterance across multiple channel events makes Claude Code see
-        # it as N separate user inputs. Joining here keeps the whole
-        # utterance as a single line delivered to every consumer.
-        #
-        # We join raw segment text (not seg.text.strip()) so Whisper's own
-        # tokenizer spacing is preserved — most English segments already
-        # start with a leading space.
+        # Join all segments from one recording into a single output line.
+        # One PTT press = one thought = one transcript = one channel event.
         text = "".join(seg.text for seg in segments).strip()
         if not text:
             return
-        print(f"[voice-sttd] > {text}", flush=True)
-        self._broadcast(text + "\n")
-
-    # ---- output socket pubsub ----
-
-    def _broadcast(self, msg: str) -> None:
-        data = msg.encode("utf-8")
-        # Snapshot the client list under the lock, then sendall() outside
-        # it. Holding _out_lock across a blocking sendall would let a
-        # single slow consumer wedge every other consumer AND block the
-        # accept loop from registering new clients. Dead sockets are
-        # collected and removed under the lock in a second pass.
-        with self._out_lock:
-            clients = list(self._out_clients)
-
-        dead: list[socket.socket] = []
-        for c in clients:
-            try:
-                c.sendall(data)
-            except OSError:
-                dead.append(c)
-
-        if dead:
-            with self._out_lock:
-                for c in dead:
-                    try:
-                        self._out_clients.remove(c)
-                    except ValueError:
-                        pass  # already removed by a concurrent broadcast
-            for c in dead:
-                try:
-                    c.close()
-                except OSError:
-                    pass
-
-    def _out_accept_loop(self, sock: socket.socket):
-        while True:
-            client, _ = sock.accept()
-            with self._out_lock:
-                self._out_clients.append(client)
-            print(f"[voice-sttd] output client connected ({len(self._out_clients)} total)", flush=True)
-
-    # ---- control socket ----
-
-    def _handle_ctrl(self, conn: socket.socket) -> None:
+        _log(f"> {text}")
         try:
-            data = conn.recv(64).decode("utf-8", errors="ignore").strip()
-            if data == "start":
+            sys.stdout.write(text + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            # Parent closed the pipe — nothing to forward to, exit cleanly
+            # on the next stdin read (which will also see EOF).
+            pass
+
+    # ---- lifecycle ----
+
+    def run_stdin_loop(self) -> None:
+        """Main loop: read line-delimited commands from stdin until EOF.
+
+        Commands:
+            ``start``  — begin recording
+            ``stop``   — stop recording and queue for transcription
+            (unknown commands are silently ignored; the daemon never
+             trusts its own stdin for anything beyond these two verbs)
+        """
+        _log("ready; awaiting stdin commands")
+        for raw in sys.stdin:
+            cmd = raw.strip()
+            if cmd == "start":
                 self.start_recording()
-                conn.sendall(b"ok\n")
-            elif data == "stop":
+            elif cmd == "stop":
                 self.stop_recording()
-                conn.sendall(b"ok\n")
+            elif cmd == "":
+                continue
             else:
-                conn.sendall(b"unknown\n")
-        finally:
-            conn.close()
+                _log(f"unknown command: {cmd!r}")
 
-    def serve(self):
-        # Create the socket parent directory with 0700 perms so sockets
-        # inside are only reachable by this user. Use umask to guarantee
-        # the sockets themselves are bound with 0600-style perms — this
-        # closes the bind→chmod race window where the socket inherited
-        # umask-derived perms between bind() and chmod().
-        os.makedirs(SOCKET_DIR, mode=0o700, exist_ok=True)
-        # If someone else (an earlier run, a manual mkdir) created it
-        # with looser perms, tighten them.
+    def shutdown(self) -> None:
+        """Best-effort cleanup — called from main()'s finally block."""
         try:
-            os.chmod(SOCKET_DIR, 0o700)
-        except OSError as e:
-            print(f"[voice-sttd] warning: could not chmod {SOCKET_DIR}: {e}", file=sys.stderr, flush=True)
-
-        for path in (CTRL_SOCK, OUT_SOCK):
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-
-        prev_umask = os.umask(0o077)
-        try:
-            out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            out.bind(OUT_SOCK)
-            out.listen(16)
-            os.chmod(OUT_SOCK, 0o600)
-            threading.Thread(target=self._out_accept_loop, args=(out,), daemon=True).start()
-
-            ctrl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            ctrl.bind(CTRL_SOCK)
-            ctrl.listen(16)
-            os.chmod(CTRL_SOCK, 0o600)
-        finally:
-            os.umask(prev_umask)
-
-        print(f"[voice-sttd] listening: ctrl={CTRL_SOCK} out={OUT_SOCK}", flush=True)
-
-        while True:
-            conn, _ = ctrl.accept()
-            threading.Thread(target=self._handle_ctrl, args=(conn,), daemon=True).start()
+            self._stream.stop()
+            self._stream.close()
+        except Exception:
+            pass
 
 
 def _parse_input_device(raw: str | None) -> str | int | None:
@@ -305,10 +226,7 @@ def _bridge_pulse_source() -> None:
     PortAudio's pulseaudio host API reads PULSE_SOURCE at stream-open time
     to pick a specific capture source. We expose this to users as
     VOICE_STT_PULSE_SOURCE (namespaced under the project) and bridge it
-    here so the daemon can be configured entirely through .env — both
-    under voice-stt-svc (which used to do its own bash-side bridge) and
-    under systemd user units (whose EnvironmentFile doesn't run shell
-    logic).
+    here so the daemon can be configured via the XDG config file alone.
     """
     if "PULSE_SOURCE" in os.environ:
         return
@@ -318,10 +236,8 @@ def _bridge_pulse_source() -> None:
 
 
 def main():
-    # CLI args default to env vars (populated from .env via voice-stt-svc
-    # or a systemd user-unit EnvironmentFile), which in turn fall back to
-    # hardcoded defaults. Precedence, highest to lowest:
-    #   CLI arg > shell env > .env file > builtin default.
+    # Config precedence (highest to lowest):
+    #     CLI arg > shell env > XDG config file > builtin default
     _bridge_pulse_source()
 
     p = argparse.ArgumentParser()
@@ -357,12 +273,17 @@ def main():
     )
     args = p.parse_args()
 
-    input_device = _parse_input_device(args.input_device if args.input_device != "default" else None)
+    input_device = _parse_input_device(
+        args.input_device if args.input_device != "default" else None
+    )
     d = Daemon(args.model, args.device, args.compute_type, input_device)
     try:
-        d.serve()
+        d.run_stdin_loop()
     except KeyboardInterrupt:
-        print("\n[voice-sttd] bye", flush=True)
+        _log("interrupted")
+    finally:
+        d.shutdown()
+        _log("bye")
 
 
 if __name__ == "__main__":
