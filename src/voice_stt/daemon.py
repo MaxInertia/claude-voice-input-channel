@@ -130,12 +130,20 @@ class Daemon:
             vad_filter=True,
             beam_size=5,
         )
-        for seg in segments:
-            text = seg.text.strip()
-            if not text:
-                continue
-            print(f"[voice-sttd] > {text}", flush=True)
-            self._broadcast(text + "\n")
+        # Concatenate all segments from one recording into a single broadcast
+        # line. In PTT mode, one button press is one thought — splitting a
+        # long utterance across multiple channel events makes Claude Code see
+        # it as N separate user inputs. Joining here keeps the whole
+        # utterance as a single line delivered to every consumer.
+        #
+        # We join raw segment text (not seg.text.strip()) so Whisper's own
+        # tokenizer spacing is preserved — most English segments already
+        # start with a leading space.
+        text = "".join(seg.text for seg in segments).strip()
+        if not text:
+            return
+        print(f"[voice-sttd] > {text}", flush=True)
+        self._broadcast(text + "\n")
 
     # ---- output socket pubsub ----
 

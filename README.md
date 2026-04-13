@@ -31,6 +31,13 @@ you can run as many consumers in parallel as you want.
 
 ## One-time setup
 
+Clone the repo anywhere you like — the examples below assume `~/projects/voice-stt`:
+
+```bash
+git clone https://github.com/MaxInertia/voice-stt.git ~/projects/voice-stt
+cd ~/projects/voice-stt
+```
+
 System packages (Ubuntu/Debian):
 
 ```bash
@@ -60,10 +67,9 @@ CUDA libs (cuBLAS + cuDNN) are pulled in as Python deps (`nvidia-cublas-cu12`,
 need system `libcudnn` or to fiddle with `LD_LIBRARY_PATH`. You only need a
 working NVIDIA driver (check with `nvidia-smi`).
 
-Project install:
+Install the Python dependencies (from the repo root):
 
 ```bash
-cd ~/projects/voice-stt
 uv sync
 ```
 
