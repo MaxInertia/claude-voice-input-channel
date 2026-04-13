@@ -215,12 +215,14 @@ recommended.
 
 ## Output protocol
 
-`OUT_SOCK` (`/tmp/voice-stt-out.sock`) is a Unix stream socket that emits
-newline-delimited UTF-8. Anything that can `socket.connect` to a Unix path
+The daemon's broadcast socket is a Unix stream socket that emits
+newline-delimited UTF-8. It lives under `$XDG_RUNTIME_DIR/voice-stt/out.sock`
+(typically `/run/user/$UID/voice-stt/out.sock` on systemd Linux), which is
+per-user 0700 by design. Anything that can `socket.connect` to a Unix path
 can consume it — Python, Go, `socat`, `nc`:
 
 ```bash
-socat - UNIX-CONNECT:/tmp/voice-stt-out.sock
+socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/voice-stt/out.sock"
 ```
 
 That's the "pipe to anything" hook — write your own consumer in 5 lines.
@@ -399,7 +401,7 @@ If `voice-stt-svc stop` hangs or the daemon is otherwise stuck:
 ```bash
 pkill -f 'voice_stt\.daemon|voice-sttd'
 pkill -f 'voice_stt\.ptt_listener|voice-stt-ptt'
-rm -f /tmp/voice-stt-ctrl.sock /tmp/voice-stt-out.sock
+rm -rf "$XDG_RUNTIME_DIR/voice-stt"
 ```
 
 ### CUDA out of memory

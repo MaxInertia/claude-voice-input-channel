@@ -16,8 +16,9 @@ PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 RUN_DIR="${VOICE_STT_RUN_DIR:-/tmp}"
 DAEMON_LOG="$RUN_DIR/voice-stt-daemon.log"
 PTT_LOG="$RUN_DIR/voice-stt-ptt.log"
-CTRL_SOCK="/tmp/voice-stt-ctrl.sock"
-OUT_SOCK="/tmp/voice-stt-out.sock"
+SOCKET_DIR="${XDG_RUNTIME_DIR:-/tmp}/voice-stt"
+CTRL_SOCK="$SOCKET_DIR/ctrl.sock"
+OUT_SOCK="$SOCKET_DIR/out.sock"
 
 DAEMON_PAT='voice_stt\.daemon|/voice-sttd'
 PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'

@@ -19,8 +19,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as net from 'node:net'
+import * as path from 'node:path'
 
-const SOCK = '/tmp/voice-stt-out.sock'
+// Match src/voice_stt/__init__.py — sockets live under
+// $XDG_RUNTIME_DIR/voice-stt/ (per-user 0700 on systemd desktops) and
+// fall back to /tmp/voice-stt/ if XDG_RUNTIME_DIR isn't set.
+const RUNTIME_DIR = process.env.XDG_RUNTIME_DIR || '/tmp'
+const SOCK = path.join(RUNTIME_DIR, 'voice-stt', 'out.sock')
 const INITIAL_BACKOFF_MS = 500
 const MAX_BACKOFF_MS = 5000
 

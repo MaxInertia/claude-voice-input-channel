@@ -41,7 +41,7 @@ _preload_cuda_libs()
 import numpy as np
 import sounddevice as sd
 
-from . import CTRL_SOCK, OUT_SOCK, SAMPLE_RATE
+from . import CTRL_SOCK, OUT_SOCK, SAMPLE_RATE, SOCKET_DIR
 
 
 class Daemon:
@@ -198,22 +198,40 @@ class Daemon:
             conn.close()
 
     def serve(self):
+        # Create the socket parent directory with 0700 perms so sockets
+        # inside are only reachable by this user. Use umask to guarantee
+        # the sockets themselves are bound with 0600-style perms — this
+        # closes the bind→chmod race window where the socket inherited
+        # umask-derived perms between bind() and chmod().
+        os.makedirs(SOCKET_DIR, mode=0o700, exist_ok=True)
+        # If someone else (an earlier run, a manual mkdir) created it
+        # with looser perms, tighten them.
+        try:
+            os.chmod(SOCKET_DIR, 0o700)
+        except OSError as e:
+            print(f"[voice-sttd] warning: could not chmod {SOCKET_DIR}: {e}", file=sys.stderr, flush=True)
+
         for path in (CTRL_SOCK, OUT_SOCK):
             try:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
 
-        out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        out.bind(OUT_SOCK)
-        out.listen(16)
-        os.chmod(OUT_SOCK, 0o600)
-        threading.Thread(target=self._out_accept_loop, args=(out,), daemon=True).start()
+        prev_umask = os.umask(0o077)
+        try:
+            out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            out.bind(OUT_SOCK)
+            out.listen(16)
+            os.chmod(OUT_SOCK, 0o600)
+            threading.Thread(target=self._out_accept_loop, args=(out,), daemon=True).start()
 
-        ctrl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        ctrl.bind(CTRL_SOCK)
-        ctrl.listen(16)
-        os.chmod(CTRL_SOCK, 0o600)
+            ctrl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            ctrl.bind(CTRL_SOCK)
+            ctrl.listen(16)
+            os.chmod(CTRL_SOCK, 0o600)
+        finally:
+            os.umask(prev_umask)
+
         print(f"[voice-sttd] listening: ctrl={CTRL_SOCK} out={OUT_SOCK}", flush=True)
 
         while True:
