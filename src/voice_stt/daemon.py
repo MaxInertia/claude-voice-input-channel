@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import queue
 import socket
 import sys
 import threading
@@ -90,6 +91,20 @@ class Daemon:
         self._out_clients: list[socket.socket] = []
         self._out_lock = threading.Lock()
 
+        # Background transcription worker. stop_recording enqueues a
+        # captured audio array and returns immediately, so ctrl-handler
+        # threads never block on Whisper decode. A single worker drains
+        # the queue — serializing transcriptions is what we want anyway,
+        # because faster-whisper/CTranslate2 isn't safe for concurrent
+        # calls on one model instance.
+        self._transcribe_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
+        self._transcribe_thread = threading.Thread(
+            target=self._transcribe_worker,
+            name="voice-stt-transcribe",
+            daemon=True,
+        )
+        self._transcribe_thread.start()
+
     # ---- audio capture ----
 
     def _audio_cb(self, indata, frames, time, status):
@@ -117,10 +132,39 @@ class Daemon:
             self._capturing = False
             audio = np.concatenate(self._frames) if self._frames else np.zeros(0, dtype=np.float32)
             self._frames = []
-        print(f"[voice-sttd] recording: OFF ({len(audio)/SAMPLE_RATE:.2f}s) — transcribing", flush=True)
-        self._transcribe_and_broadcast(audio)
+        print(f"[voice-sttd] recording: OFF ({len(audio)/SAMPLE_RATE:.2f}s) — queued", flush=True)
+        # Hand off to the background transcription worker and return fast.
+        # This keeps ctrl handler threads non-blocking so a rapid press/
+        # release/press sequence never loses audio due to the second press
+        # waiting on the first utterance's Whisper decode.
+        try:
+            self._transcribe_queue.put_nowait(audio)
+        except queue.Full:
+            # Unusual — means the worker is pathologically behind. Drop
+            # the oldest pending segment to make room for the new one so
+            # we prefer recent speech to stale.
+            try:
+                self._transcribe_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._transcribe_queue.put_nowait(audio)
+            except queue.Full:
+                print("[voice-sttd] transcription queue full, dropping audio", file=sys.stderr, flush=True)
 
-    def _transcribe_and_broadcast(self, audio: np.ndarray):
+    def _transcribe_worker(self) -> None:
+        while True:
+            audio = self._transcribe_queue.get()
+            try:
+                self._transcribe_and_broadcast(audio)
+            except Exception as e:
+                # Never let a single bad transcription kill the worker —
+                # log and keep draining.
+                print(f"[voice-sttd] transcription error: {e}", file=sys.stderr, flush=True)
+            finally:
+                self._transcribe_queue.task_done()
+
+    def _transcribe_and_broadcast(self, audio: np.ndarray) -> None:
         if audio.size < SAMPLE_RATE // 4:  # <0.25s, skip
             print("[voice-sttd] audio too short, skipping", flush=True)
             return
