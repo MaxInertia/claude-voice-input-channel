@@ -1,21 +1,20 @@
 # voice-stt configuration.
 #
-# Copy this file to `.env` (same directory) and edit whichever values you
-# want to override. Shell env vars take precedence, so a one-off run like
+# This file is installed by `/voice-stt:install` to
+# $XDG_CONFIG_HOME/voice-stt/config (typically ~/.config/voice-stt/config)
+# on first run. Edit the values below to override the defaults. Re-running
+# /voice-stt:install preserves existing files — you won't lose your edits.
 #
-#     VOICE_STT_MODEL=small.en voice-stt-svc restart
-#
-# will still work without editing .env.
-#
-# All of these have sensible defaults — an empty or missing .env is fine,
-# the daemon will run with the builtin defaults.
+# Shell env vars take precedence over anything set here, so one-off
+# overrides like `VOICE_STT_MODEL=small.en claude ...` still work without
+# editing this file.
 
 
 # --- Whisper / faster-whisper model settings -------------------------------
 
 # Which faster-whisper model to load.
 # Common options: tiny.en, base.en, small.en, medium.en, large-v3
-# Smaller = faster + less VRAM. medium.en is a good default on an 8GB GPU.
+# Smaller = faster + less VRAM. medium.en is a good default on an 8 GB GPU.
 VOICE_STT_MODEL=medium.en
 
 # CTranslate2 inference device. `cuda` for any NVIDIA GPU, `cpu` otherwise.
@@ -31,8 +30,8 @@ VOICE_STT_COMPUTE_TYPE=float16
 # --- Audio capture settings ------------------------------------------------
 
 # PortAudio backend passed to sounddevice.InputStream(device=...).
-# Accepts a device name substring (`pulse`, `pipewire`, `default`), a numeric
-# index, or a longer device name fragment.
+# Accepts a device name substring (`pulse`, `pipewire`, `default`), a
+# numeric index, or a longer device name fragment.
 #
 #   `pulse`     — routes through pulseaudio / pipewire-pulse compat layer
 #                 and honors PULSE_SOURCE below. Recommended default.
@@ -41,9 +40,10 @@ VOICE_STT_COMPUTE_TYPE=float16
 #   `default`   — system default without indirection.
 VOICE_STT_INPUT_DEVICE=pulse
 
-# Optional: raw PipeWire source `node.name` to capture from. Only needed if
-# you hit the "alternating silent buffers" bug (see README → Advanced &
-# troubleshooting → Audio routing). Find yours with:
+# Optional: raw PipeWire source `node.name` to capture from. Only needed
+# if you hit the "alternating silent buffers" bug (virtual noise-cancel
+# source toggles its mute state between consumer sessions). Find yours
+# with:
 #
 #     wpctl status                        # look under "Sources"
 #     wpctl inspect <id> | grep node.name
@@ -54,7 +54,8 @@ VOICE_STT_INPUT_DEVICE=pulse
 
 # --- PTT listener settings -------------------------------------------------
 
-# evdev key name to watch for press/release. KEY_F13–KEY_F24 are unused on
-# most keyboards and make good intermediary keys for input-remapper /
-# xremap / kmonad to map hardware buttons onto.
+# evdev key name the in-process PTT thread watches for press/release.
+# KEY_F13–KEY_F24 are unused on most keyboards and make good intermediary
+# keys for input-remapper / xremap / kmonad to map hardware buttons onto.
+# Leave empty to disable the PTT thread entirely.
 VOICE_STT_PTT_KEY=KEY_F20

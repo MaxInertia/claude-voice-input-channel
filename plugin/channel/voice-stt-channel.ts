@@ -1,48 +1,79 @@
 #!/usr/bin/env bun
 //
-// voice-stt Claude Code channel.
+// voice-stt Claude Code channel — spawns the Python daemon as a child
+// process and forwards its stdout lines into the current Claude Code
+// session as <channel source="dictate"> events.
 //
-// Bridges the local voice-stt daemon (a Python process broadcasting transcribed
-// utterances over a Unix socket) into a running Claude Code session, by forwarding
-// each utterance as a `notifications/claude/channel` MCP event.
+// Architecture (post-refactor):
 //
-// This is a one-way channel: Claude Code receives transcripts as if the user had
-// typed them, but does not send anything back through this channel. There is no
-// reply tool and no permission relay — voice approving Bash/Write would be unsafe
-// (anything within earshot of the mic could approve `rm -rf $HOME`).
+//   Claude Code <-- MCP stdio -->  voice-stt-channel.ts  (this process)
+//                                          |
+//                                          | Bun.spawn() via 'uv run'
+//                                          v
+//                                  voice-sttd (Python child)
+//                                  - loads faster-whisper on CUDA
+//                                  - opens persistent sd.InputStream
+//                                  - runs PTT evdev thread
+//                                  - emits transcript lines to stdout
 //
-// CRITICAL: never write to stdout. Stdout is the MCP transport. All logging must
-// go to stderr (Claude Code surfaces it in ~/.claude/debug/<session-id>.txt).
+// When Claude Code exits (SIGTERM/SIGINT), we forward the signal to the
+// Python child, which unwinds cleanly via its stdin-EOF path. The child
+// holds a flock on $XDG_RUNTIME_DIR/voice-stt/daemon.lock, so a second
+// concurrent Claude Code session with this plugin enabled will see its
+// child exit fast with code 2, which we treat as a permanent-contention
+// sentinel and skip the restart-on-crash retry loop.
 //
-// Plan: docs/plans/2026-04-11-feat-voice-stt-claude-code-channel-plan.md
+// CRITICAL: never write to stdout. Stdout is the MCP transport. All
+// logging must go to stderr (Claude Code surfaces stderr in
+// ~/.claude/debug/<session-id>.txt).
+//
+// Plan: docs/plans/2026-04-12-refactor-collapse-daemon-into-plugin-plan.md
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import * as net from 'node:net'
 import * as path from 'node:path'
 
-// Match src/voice_stt/__init__.py — sockets live under
-// $XDG_RUNTIME_DIR/voice-stt/ (per-user 0700 on systemd desktops) and
-// fall back to /tmp/voice-stt/ if XDG_RUNTIME_DIR isn't set.
-const RUNTIME_DIR = process.env.XDG_RUNTIME_DIR || '/tmp'
-const SOCK = path.join(RUNTIME_DIR, 'voice-stt', 'out.sock')
+// ---- constants ------------------------------------------------------------
+
 const INITIAL_BACKOFF_MS = 500
 const MAX_BACKOFF_MS = 5000
+const MAX_RESTARTS_IN_WINDOW = 3
+const RESTART_WINDOW_MS = 30_000
+const SINGLETON_CONTENTION_EXIT = 2  // sentinel from singleton.acquire_or_exit
+
+// Plugin root — the cached plugin dir when installed via /plugin install,
+// or the repo checkout during local development (the script's own
+// directory's parent).
+const PLUGIN_ROOT: string =
+  process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(import.meta.dir, '..', '..')
 
 const INSTRUCTIONS = `
-Events tagged <channel source="voice-stt"> are voice transcripts spoken by the user and produced by a local Whisper model running on the same machine. Treat them exactly as if the user had typed the same text into the terminal — they are first-person user input, not third-party messages or alerts.
+Events tagged <channel source="dictate"> (or the fully-qualified "plugin:dictate:dictate") are voice transcripts spoken by the user and produced by a local Whisper model running on the same machine. Treat them exactly as if the user had typed the same text into the terminal — they are first-person user input, not third-party messages or alerts.
 
 Transcripts may be terse single-utterance commands, or several short utterances that together form one thought. If a sequence is fragmented or contradictory, prefer the most recent utterance. The "seq" attribute monotonically increases across the channel server's lifetime; the "ts" attribute is a millisecond Unix epoch.
 
 Do not reply through this channel — respond normally in the terminal session as you would to typed input. Do not assume the user is watching the terminal in real time; long-running work is fine.
 `.trim()
 
+// ---- logging helpers ------------------------------------------------------
+
 function logErr(msg: string): void {
   process.stderr.write(`[voice-stt-channel] ${msg}\n`)
 }
 
+// Defensive: any future dependency that accidentally calls console.log
+// would corrupt the MCP stdio protocol. Reroute to stderr.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+console.log = (...args: any[]): void => {
+  process.stderr.write(
+    `[voice-stt-channel] ${args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n`,
+  )
+}
+
+// ---- MCP server setup -----------------------------------------------------
+
 const mcp = new Server(
-  { name: 'voice-stt', version: '0.1.0' },
+  { name: 'dictate', version: '0.2.0' },
   {
     capabilities: { experimental: { 'claude/channel': {} } },
     instructions: INSTRUCTIONS,
@@ -51,49 +82,154 @@ const mcp = new Server(
 
 await mcp.connect(new StdioServerTransport())
 
+// ---- child process orchestration -----------------------------------------
+
 let seq = 0
-let backoffMs = INITIAL_BACKOFF_MS
+let restartTimestamps: number[] = []
+let currentChild: ReturnType<typeof Bun.spawn> | null = null
+let shuttingDown = false
 
-function connectSocket(): void {
-  const sock = net.connect(SOCK)
-  let buf = Buffer.alloc(0)
-
-  sock.once('connect', () => {
-    backoffMs = INITIAL_BACKOFF_MS
-    logErr(`connected to ${SOCK}`)
-  })
-
-  sock.on('data', (chunk: Buffer) => {
-    buf = Buffer.concat([buf, chunk])
-    let i: number
-    while ((i = buf.indexOf(0x0a)) !== -1) {
-      const line = buf.subarray(0, i).toString('utf8').trim()
-      buf = buf.subarray(i + 1)
-      if (!line) continue
-      seq += 1
-      mcp
-        .notification({
-          method: 'notifications/claude/channel',
-          params: {
-            content: line,
-            meta: { seq: String(seq), ts: String(Date.now()) },
-          },
-        })
-        .catch((e: unknown) => logErr(`notification error: ${String(e)}`))
+async function forwardStderr(stream: ReadableStream<Uint8Array>): Promise<void> {
+  try {
+    for await (const chunk of stream) {
+      // Just passthrough — the daemon's log lines already have their own
+      // "[voice-sttd]" prefix, so we don't add another.
+      process.stderr.write(chunk)
     }
-  })
-
-  // Errors are reported via the close handler so we don't double-reconnect.
-  // Swallow here to keep the process alive.
-  sock.on('error', () => {})
-
-  sock.once('close', () => {
-    const wait = backoffMs
-    logErr(`disconnected; reconnecting in ${wait}ms`)
-    backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
-    setTimeout(connectSocket, wait)
-  })
+  } catch (e) {
+    logErr(`stderr forward error: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
-logErr(`starting; will connect to voice-stt daemon at ${SOCK}`)
-connectSocket()
+async function forwardStdout(stream: ReadableStream<Uint8Array>): Promise<void> {
+  let buf = Buffer.alloc(0)
+  try {
+    for await (const chunk of stream) {
+      buf = Buffer.concat([buf, chunk])
+      let i: number
+      while ((i = buf.indexOf(0x0a)) !== -1) {
+        const line = buf.subarray(0, i).toString('utf8').trim()
+        buf = buf.subarray(i + 1)
+        if (!line) continue
+        seq += 1
+        mcp
+          .notification({
+            method: 'notifications/claude/channel',
+            params: {
+              content: line,
+              meta: { seq: String(seq), ts: String(Date.now()) },
+            },
+          })
+          .catch((e: unknown) =>
+            logErr(
+              `notification error: ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          )
+      }
+    }
+  } catch (e) {
+    logErr(`stdout forward error: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+function canRestart(): boolean {
+  const now = Date.now()
+  restartTimestamps = restartTimestamps.filter((t) => now - t < RESTART_WINDOW_MS)
+  return restartTimestamps.length < MAX_RESTARTS_IN_WINDOW
+}
+
+async function spawnChild(): Promise<void> {
+  if (shuttingDown) return
+
+  logErr(`spawning voice-sttd (plugin root: ${PLUGIN_ROOT})`)
+  const child = Bun.spawn({
+    cmd: ['uv', 'run', '--project', PLUGIN_ROOT, 'voice-sttd'],
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...process.env },
+  })
+  currentChild = child
+
+  // Stream forwarding tasks run concurrently with the exit watcher.
+  const stdoutTask = forwardStdout(child.stdout)
+  const stderrTask = forwardStderr(child.stderr)
+
+  const code = await child.exited
+  // Let the forwarders finish draining any buffered output before we log
+  // the exit status.
+  await Promise.allSettled([stdoutTask, stderrTask])
+  currentChild = null
+
+  if (shuttingDown) {
+    logErr(`child exited (code ${code}) during shutdown`)
+    return
+  }
+
+  if (code === SINGLETON_CONTENTION_EXIT) {
+    logErr(
+      `child exited with ${SINGLETON_CONTENTION_EXIT} (singleton contention) — ` +
+        `another voice-stt daemon is already running. Skipping restart loop; ` +
+        `exit the other Claude Code session first.`,
+    )
+    return
+  }
+
+  if (!canRestart()) {
+    logErr(
+      `child exited (code ${code}) but restart budget is exhausted ` +
+        `(${MAX_RESTARTS_IN_WINDOW} restarts in ${RESTART_WINDOW_MS / 1000}s). ` +
+        `Giving up.`,
+    )
+    return
+  }
+
+  restartTimestamps.push(Date.now())
+  const backoff = Math.min(
+    INITIAL_BACKOFF_MS * 2 ** (restartTimestamps.length - 1),
+    MAX_BACKOFF_MS,
+  )
+  logErr(`child exited (code ${code}); restarting in ${backoff}ms`)
+  setTimeout(() => {
+    spawnChild().catch((e) =>
+      logErr(`spawn error: ${e instanceof Error ? e.message : String(e)}`),
+    )
+  }, backoff)
+}
+
+// ---- signal handling -----------------------------------------------------
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return
+  shuttingDown = true
+  logErr(`received ${signal}; tearing down child`)
+  if (currentChild) {
+    try {
+      // Closing stdin gives the Python child a clean EOF to unwind from.
+      // The daemon's stdin reader exits on EOF, runs its finally block,
+      // and exits with code 0.
+      currentChild.stdin?.end()
+    } catch {
+      // ignore
+    }
+    // Belt and braces: if the child doesn't exit on its own within 2s,
+    // force SIGTERM.
+    setTimeout(() => {
+      try {
+        currentChild?.kill('SIGTERM')
+      } catch {
+        // ignore
+      }
+    }, 2000)
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+
+// ---- main ----------------------------------------------------------------
+
+logErr('starting; will spawn voice-sttd child')
+spawnChild().catch((e) =>
+  logErr(`initial spawn failed: ${e instanceof Error ? e.message : String(e)}`),
+)
