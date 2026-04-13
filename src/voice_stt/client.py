@@ -1,8 +1,8 @@
 """Voice STT control + consumer CLI.
 
 Subcommands:
-  start | stop | toggle | status | quit   — send command to daemon
-  listen                                    — print transcribed lines to stdout
+  start | stop   — send command to the daemon over the ctrl socket
+  listen         — print transcribed lines to stdout
 """
 
 from __future__ import annotations
@@ -55,8 +55,8 @@ def cmd_listen() -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
-    for c in ("start", "stop", "toggle", "status", "quit"):
-        sub.add_parser(c)
+    sub.add_parser("start", help="tell the daemon to start recording")
+    sub.add_parser("stop", help="tell the daemon to stop recording and transcribe")
     sub.add_parser("listen", help="print utterances to stdout")
     args = p.parse_args()
 

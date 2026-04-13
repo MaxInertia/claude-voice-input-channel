@@ -353,10 +353,6 @@ uv run voice-stt listen | your-llm-cli
 uv run voice-stt start                  # begin recording
 # ...speak...
 uv run voice-stt stop                   # stop + transcribe + broadcast
-
-uv run voice-stt toggle                 # alternative: flip between start/stop
-uv run voice-stt status                 # "recording" or "idle"
-uv run voice-stt quit                   # shut down the daemon
 ```
 
 To kill the daemon if Ctrl-C in terminal 1 doesn't work: `pkill -f voice-sttd`.
