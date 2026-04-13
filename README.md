@@ -34,7 +34,7 @@ you can run as many consumers in parallel as you want.
 Clone the repo anywhere you like — the examples below assume `~/projects/voice-stt`:
 
 ```bash
-git clone https://github.com/MaxInertia/voice-stt.git ~/projects/voice-stt
+git clone https://github.com/MaxInertia/claude-voice-input-channel.git ~/projects/voice-stt
 cd ~/projects/voice-stt
 ```
 
