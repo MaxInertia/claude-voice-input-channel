@@ -340,6 +340,10 @@ Concrete steps:
 - **Prompt injection via audio.** Documented above. Not a code risk but a user-awareness risk.
 - **Daemon needs to be running.** Channel reconnects gracefully, but a silently-reconnecting channel server is invisible to the user. Mitigated in Phase 2 by the `claude-voice` launcher wrapper, which performs an explicit daemon health check before launching Claude Code and either confirms the daemon is up or refuses to launch with a clear pointer to `voice-stt-svc start`. This is a hard requirement, not a nice-to-have.
 
+### Retrospective note (2026-04-12)
+
+The three-process architecture described in this plan was completely collapsed the day after it shipped. The "multi-session VRAM sharing" property that justified having a long-lived systemd daemon turned out to be a phantom requirement — there's one mic, one PTT button, one user, and you never run two Claude Code sessions both listening for voice input. A follow-up plan at [`2026-04-12-refactor-collapse-daemon-into-plugin-plan.md`](2026-04-12-refactor-collapse-daemon-into-plugin-plan.md) replaces the separate `voice-sttd` + `voice-stt-ptt` systemd services with a single Python subprocess spawned by the channel plugin, tied to the Claude Code session lifetime. Install ergonomics match voicemode's 3-command flow (`/plugin marketplace add` + `/plugin install` + `/voice-stt:install`). Net: ~500 lines of bash/systemd/wrapper code deleted, ~200 lines of TS subprocess orchestration + Python config loader + singleton lock added. Everything about the channel plugin protocol, the audio-routing bypass, the PTT evdev pattern, and the segment-join transcription behavior is preserved — the refactor is purely a lifecycle and packaging change.
+
 ### Post-implementation: alternating-silence mic capture bug
 
 Discovered after the channel was already working end-to-end: every other PTT click produced a 1s buffer of pure silence (peak=0.0, rms=0.0) even though the daemon saw `start_recording`/`stop_recording` cleanly and `len(audio)` was correct. Whisper's VAD dropped these silent buffers, so transcripts arrived on odd clicks only.
