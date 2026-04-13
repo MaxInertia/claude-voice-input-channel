@@ -147,17 +147,31 @@ class Daemon:
 
     # ---- output socket pubsub ----
 
-    def _broadcast(self, msg: str):
+    def _broadcast(self, msg: str) -> None:
         data = msg.encode("utf-8")
-        dead: list[socket.socket] = []
+        # Snapshot the client list under the lock, then sendall() outside
+        # it. Holding _out_lock across a blocking sendall would let a
+        # single slow consumer wedge every other consumer AND block the
+        # accept loop from registering new clients. Dead sockets are
+        # collected and removed under the lock in a second pass.
         with self._out_lock:
-            for c in self._out_clients:
-                try:
-                    c.sendall(data)
-                except OSError:
-                    dead.append(c)
+            clients = list(self._out_clients)
+
+        dead: list[socket.socket] = []
+        for c in clients:
+            try:
+                c.sendall(data)
+            except OSError:
+                dead.append(c)
+
+        if dead:
+            with self._out_lock:
+                for c in dead:
+                    try:
+                        self._out_clients.remove(c)
+                    except ValueError:
+                        pass  # already removed by a concurrent broadcast
             for c in dead:
-                self._out_clients.remove(c)
                 try:
                     c.close()
                 except OSError:
