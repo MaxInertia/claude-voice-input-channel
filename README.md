@@ -19,15 +19,20 @@ streams dictated transcripts straight into a running Claude Code session.
                                     ▼
                               OUT_SOCK (Unix socket, line-delimited UTF-8)
                                     │
-        ┌───────────────────────────┼───────────────────────────┐
-        ▼                           ▼                           ▼
-  voice-stt listen           voice-stt type              voice-stt clip
-  (stdout, pipe              (xdotool into                (xclip clipboard)
-   to anything)               focused window)
+        ┌───────────────────────────┴───────────────────────────┐
+        ▼                                                       ▼
+  voice-stt listen                                  voice-stt-channel.ts
+  (stdout, pipe to                                  (Claude Code channel —
+   any tool you want)                                pushes transcripts into
+                                                     a running session)
 ```
 
 The daemon broadcasts each utterance to **all** connected output clients, so
-you can run as many consumers in parallel as you want.
+you can run as many consumers in parallel as you want. The two shipped
+consumers are `voice-stt listen` (prints to stdout, easy to pipe into
+anything) and the Claude Code channel plugin (covered later). Anything else
+you want — a clipboard sink, a desktop notification, an auto-typer — is
+five lines of Python, Go, or shell reading from the output socket.
 
 ## One-time setup
 
@@ -41,18 +46,13 @@ cd ~/projects/voice-stt
 System packages (Ubuntu/Debian):
 
 ```bash
-# required
 sudo apt install libportaudio2
-
-# optional — only if you want the X11-specific consumers and hotkey:
-sudo apt install xdotool xclip xbindkeys
 ```
 
-`libportaudio2` is required by `sounddevice` to open the mic. The X11
-packages are only needed if you want the `voice-stt type` (xdotool) or
-`voice-stt clip` (xclip) consumers, or the keyboard-PTT fallback
-(xbindkeys). The daemon, PTT listener, Claude Code channel, and the
-`listen` consumer all work on any Linux display server without them.
+`libportaudio2` is required by `sounddevice` to open the mic. That's the
+only system package. The daemon, PTT listener, Claude Code channel, and
+the `listen` consumer all work on any Linux display server (X11 or
+Wayland) without any additional tooling.
 
 Install `uv` (if you don't already have it):
 
@@ -118,14 +118,19 @@ Logs land at `/tmp/voice-stt-daemon.log` and `/tmp/voice-stt-ptt.log`. There
 is no autostart on boot — you launch it when you want it.
 
 Once `voice-stt-svc start` reports both running, hold your configured PTT
-key and speak. To consume the transcripts, run any consumer in the
-foreground:
+key and speak. To consume the transcripts, run the `listen` consumer in
+the foreground:
 
 ```bash
 cd ~/projects/voice-stt
-uv run voice-stt listen           # stdout
-uv run voice-stt type             # type into focused window
-uv run voice-stt clip             # copy to clipboard
+uv run voice-stt listen            # print utterances to stdout
+uv run voice-stt listen | tee -a ~/notes.md
+uv run voice-stt listen | your-llm-cli
+```
+
+Or read directly from the output socket with any tool:
+```bash
+socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/voice-stt/out.sock"
 ```
 
 ## Push-to-talk hotkey
@@ -336,11 +341,9 @@ uv run voice-sttd                       # default: medium.en, cuda, float16
 ```
 Wait until you see `[voice-sttd] listening: ctrl=... out=...` before continuing.
 
-**Terminal 2 — consumer** (pick one; you can run several in parallel):
+**Terminal 2 — consumer** (you can run several in parallel):
 ```bash
 uv run voice-stt listen                 # print transcripts to stdout
-uv run voice-stt type                   # type into focused window via xdotool
-uv run voice-stt clip                   # copy each utterance to clipboard via xclip
 uv run voice-stt listen | tee -a ~/notes.md
 uv run voice-stt listen | your-llm-cli
 ```
