@@ -77,7 +77,11 @@ class Daemon:
         #      even with a persistent stream. Setting `PULSE_SOURCE` to a
         #      raw hardware input (see scripts/voice-stt-svc) bypasses the
         #      effect node entirely.
-        print(f"[voice-sttd] opening input device: {input_device!r}", flush=True)
+        print(
+            f"[voice-sttd] opening input device: {input_device!r}"
+            f" (PULSE_SOURCE={os.environ.get('PULSE_SOURCE', '<unset>')!r})",
+            flush=True,
+        )
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
@@ -295,10 +299,31 @@ def _parse_input_device(raw: str | None) -> str | int | None:
         return raw
 
 
+def _bridge_pulse_source() -> None:
+    """Translate VOICE_STT_PULSE_SOURCE into PULSE_SOURCE for PortAudio.
+
+    PortAudio's pulseaudio host API reads PULSE_SOURCE at stream-open time
+    to pick a specific capture source. We expose this to users as
+    VOICE_STT_PULSE_SOURCE (namespaced under the project) and bridge it
+    here so the daemon can be configured entirely through .env — both
+    under voice-stt-svc (which used to do its own bash-side bridge) and
+    under systemd user units (whose EnvironmentFile doesn't run shell
+    logic).
+    """
+    if "PULSE_SOURCE" in os.environ:
+        return
+    ps = os.environ.get("VOICE_STT_PULSE_SOURCE", "").strip()
+    if ps:
+        os.environ["PULSE_SOURCE"] = ps
+
+
 def main():
-    # CLI args default to env vars (populated from .env via voice-stt-svc),
-    # which in turn fall back to hardcoded defaults. Precedence, highest to
-    # lowest: CLI arg > shell env > .env file > builtin default.
+    # CLI args default to env vars (populated from .env via voice-stt-svc
+    # or a systemd user-unit EnvironmentFile), which in turn fall back to
+    # hardcoded defaults. Precedence, highest to lowest:
+    #   CLI arg > shell env > .env file > builtin default.
+    _bridge_pulse_source()
+
     p = argparse.ArgumentParser()
     p.add_argument(
         "--model",

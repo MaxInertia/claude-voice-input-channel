@@ -69,39 +69,61 @@ if [[ -f "$ENV_FILE" ]]; then
     done < "$ENV_FILE"
 fi
 
-# --- audio routing ---------------------------------------------------------
-# Defaults fall back to `pulse` (pipewire-pulse / PulseAudio compat layer,
-# honors PULSE_SOURCE). Override via .env or shell env. If you see
-# alternating silent audio buffers, see README → Advanced & troubleshooting
-# → Audio routing.
-: "${VOICE_STT_INPUT_DEVICE:=pulse}"
-: "${VOICE_STT_PULSE_SOURCE:=}"
-export VOICE_STT_INPUT_DEVICE
-if [[ -n "$VOICE_STT_PULSE_SOURCE" ]]; then
-    export PULSE_SOURCE="$VOICE_STT_PULSE_SOURCE"
+# --- propagate VOICE_STT_* env to child processes --------------------------
+# The daemon reads all of these via os.environ.get() — including the
+# PULSE_SOURCE bridge — so we just need to export whatever .env populated
+# (or left unset, letting the daemon's builtin defaults apply).
+for var in VOICE_STT_MODEL VOICE_STT_COMPUTE_DEVICE VOICE_STT_COMPUTE_TYPE \
+           VOICE_STT_INPUT_DEVICE VOICE_STT_PULSE_SOURCE VOICE_STT_PTT_KEY; do
+    [[ -n "${!var+x}" ]] && export "$var"
+done
+
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+HAVE_SYSTEMD_UNITS=0
+if command -v systemctl >/dev/null 2>&1 \
+   && [[ -f "$UNIT_DIR/voice-sttd.service" ]] \
+   && [[ -f "$UNIT_DIR/voice-stt-ptt.service" ]]; then
+    HAVE_SYSTEMD_UNITS=1
 fi
 
-# --- model settings (read by the Python daemon via os.environ) -------------
-# Forward these so they're visible to child processes. Daemon argparse
-# defaults read from these env vars.
-export VOICE_STT_MODEL="${VOICE_STT_MODEL:-medium.en}"
-export VOICE_STT_COMPUTE_DEVICE="${VOICE_STT_COMPUTE_DEVICE:-cuda}"
-export VOICE_STT_COMPUTE_TYPE="${VOICE_STT_COMPUTE_TYPE:-float16}"
-export VOICE_STT_PTT_KEY="${VOICE_STT_PTT_KEY:-KEY_F20}"
+# --- systemd forwarding (preferred path) -----------------------------------
+# If the user ran scripts/install-systemd-units, forward everything to
+# systemctl --user. This is the canonical way to manage the services and
+# gives you journal integration, restart-on-failure, proper PIDs, and no
+# pgrep-self-match bug class.
+_systemctl_cmd() {
+    local cmd=$1
+    case "$cmd" in
+        start|stop|restart)
+            systemctl --user "$cmd" voice-sttd.service voice-stt-ptt.service
+            ;;
+        status)
+            systemctl --user status --no-pager voice-sttd.service voice-stt-ptt.service
+            ;;
+        logs)
+            exec journalctl --user -u voice-sttd.service -u voice-stt-ptt.service -f
+            ;;
+    esac
+}
 
+# --- legacy fallback -------------------------------------------------------
+# Only runs when systemd units aren't installed. Keeps a working voice-stt
+# on systems without systemd (rare) or before the user has run
+# install-systemd-units. This path has known papercuts (pgrep self-match,
+# no restart-on-failure, no journal) — migrate to systemd when you can.
 UV="${UV:-$HOME/.local/bin/uv}"
 [[ -x "$UV" ]] || UV="$(command -v uv || true)"
-[[ -x "$UV" ]] || { echo "uv not found; set UV=/path/to/uv" >&2; exit 1; }
 
 _pids() { pgrep -f "$1" 2>/dev/null; }
 _running() { [[ -n "$(_pids "$1")" ]]; }
 
-_start() {
+_legacy_start() {
     local name=$1 pat=$2 cmd=$3 logfile=$4
     if _running "$pat"; then
         echo "$name: already running (pid $(_pids "$pat" | tr '\n' ' '))"
         return
     fi
+    [[ -x "$UV" ]] || { echo "uv not found; set UV=/path/to/uv" >&2; return 1; }
     cd "$PROJECT_DIR"
     nohup bash -c "exec $cmd" >"$logfile" 2>&1 </dev/null &
     disown
@@ -114,7 +136,7 @@ _start() {
     fi
 }
 
-_stop() {
+_legacy_stop() {
     local name=$1 pat=$2
     local pids; pids=$(_pids "$pat")
     if [[ -z "$pids" ]]; then
@@ -135,41 +157,55 @@ _stop() {
     echo "$name: stopped"
 }
 
-case "${1:-}" in
-    start)
-        _start daemon "$DAEMON_PAT" "$UV run voice-sttd" "$DAEMON_LOG" || exit 1
-        for _ in $(seq 1 100); do
-            [[ -S "$CTRL_SOCK" ]] && break
-            sleep 0.1
-        done
-        if [[ ! -S "$CTRL_SOCK" ]]; then
-            echo "warning: daemon control socket never appeared — check $DAEMON_LOG"
-        fi
-        _start ptt "$PTT_PAT" "$UV run voice-stt-ptt" "$PTT_LOG"
-        ;;
-    stop)
-        _stop ptt "$PTT_PAT"
-        _stop daemon "$DAEMON_PAT"
-        rm -f "$CTRL_SOCK" "$OUT_SOCK"
-        ;;
-    status)
-        for pair in "daemon $DAEMON_PAT" "ptt $PTT_PAT"; do
-            n=${pair%% *}
-            p=${pair#* }
-            pids=$(_pids "$p")
-            if [[ -n "$pids" ]]; then
-                echo "$n: running (pid $(echo "$pids" | tr '\n' ' '))"
-            else
-                echo "$n: stopped"
+_legacy() {
+    case "$1" in
+        start)
+            _legacy_start daemon "$DAEMON_PAT" "$UV run voice-sttd" "$DAEMON_LOG" || exit 1
+            for _ in $(seq 1 100); do
+                [[ -S "$CTRL_SOCK" ]] && break
+                sleep 0.1
+            done
+            if [[ ! -S "$CTRL_SOCK" ]]; then
+                echo "warning: daemon control socket never appeared — check $DAEMON_LOG"
             fi
-        done
-        ;;
-    restart)
-        "$0" stop
-        "$0" start
-        ;;
-    logs)
-        exec tail -F "$DAEMON_LOG" "$PTT_LOG"
+            _legacy_start ptt "$PTT_PAT" "$UV run voice-stt-ptt" "$PTT_LOG"
+            ;;
+        stop)
+            _legacy_stop ptt "$PTT_PAT"
+            _legacy_stop daemon "$DAEMON_PAT"
+            rm -f "$CTRL_SOCK" "$OUT_SOCK"
+            ;;
+        status)
+            for pair in "daemon $DAEMON_PAT" "ptt $PTT_PAT"; do
+                n=${pair%% *}
+                p=${pair#* }
+                pids=$(_pids "$p")
+                if [[ -n "$pids" ]]; then
+                    echo "$n: running (pid $(echo "$pids" | tr '\n' ' '))"
+                else
+                    echo "$n: stopped"
+                fi
+            done
+            ;;
+        restart)
+            _legacy stop
+            _legacy start
+            ;;
+        logs)
+            exec tail -F "$DAEMON_LOG" "$PTT_LOG"
+            ;;
+    esac
+}
+
+case "${1:-}" in
+    start|stop|restart|status|logs)
+        if (( HAVE_SYSTEMD_UNITS )); then
+            _systemctl_cmd "$1"
+        else
+            echo "voice-stt-svc: systemd units not installed, using legacy supervisor." >&2
+            echo "               install with: $PROJECT_DIR/scripts/install-systemd-units" >&2
+            _legacy "$1"
+        fi
         ;;
     *)
         echo "usage: $0 {start|stop|restart|status|logs}" >&2
