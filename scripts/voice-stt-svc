@@ -32,6 +32,16 @@ PTT_PAT='voice_stt\.ptt_listener|/voice-stt-ptt'
 # See .env.example for the full list of supported keys.
 ENV_FILE="$PROJECT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
+    # Tighten permissions to 0600 so other local users can't read secrets
+    # you might later add to .env. Only act if the perms are loose today —
+    # skip the chmod if it's already tight to avoid touching files we don't
+    # need to and to avoid surprising people who intentionally group-share.
+    current_mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || echo "")
+    if [[ -n "$current_mode" && "$current_mode" != "600" && "$current_mode" != "400" ]]; then
+        chmod 600 "$ENV_FILE" 2>/dev/null \
+            && echo "voice-stt-svc: tightened $ENV_FILE permissions to 0600 (was $current_mode)" >&2
+    fi
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         # skip comments and blank lines
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -45,6 +55,9 @@ if [[ -f "$ENV_FILE" ]]; then
         key="${key// /}"
         key="${key//$'\t'/}"
         [[ -z "$key" ]] && continue
+        # only allow sensible identifier-shaped keys — blocks accidental
+        # or malicious injection if someone drops a weird line into .env
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         # strip surrounding quotes from value
         val="${val%\"}"; val="${val#\"}"
         val="${val%\'}"; val="${val#\'}"
