@@ -385,6 +385,14 @@ def _bridge_pulse_source() -> None:
 
 
 def main():
+    # Refuse to start if another voice-sttd is already running. Acquire
+    # the singleton lock FIRST — before anything expensive (model load,
+    # mic open, PTT thread spawn) so second-instance attempts fail fast
+    # with exit code 2, which the TS parent recognizes as permanent
+    # contention and skips its restart-on-crash retry loop for.
+    from . import singleton
+    singleton.acquire_or_exit()
+
     # Config precedence (highest to lowest):
     #     CLI arg > shell env > XDG config file > builtin default
     # config.load() populates os.environ from $XDG_CONFIG_HOME/voice-stt/
