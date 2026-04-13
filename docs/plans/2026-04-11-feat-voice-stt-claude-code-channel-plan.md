@@ -320,7 +320,7 @@ Concrete steps:
 
 ### Assumptions
 
-- **Linux only.** The entire `voice-stt` project already targets Linux (ALSA/PortAudio capture, evdev-based PTT listener, the systemd-style svc wrapper). The core flow works on any Linux display server; only two optional consumers (`voice-stt type`, `voice-stt clip`) and the xbindkeys fallback are X11-specific. The channel server inherits the Linux constraint and we make no effort to support macOS or Windows in any phase.
+- **Linux only.** The entire `voice-stt` project already targets Linux (ALSA/PortAudio capture, evdev-based PTT listener, the systemd-style svc wrapper). The core flow works on any Linux display server. The channel server inherits the Linux constraint and we make no effort to support macOS or Windows in any phase.
 - The user is on a personal Claude.ai plan, so the Team/Enterprise `channelsEnabled` org policy gate does not apply. Confirm at implementation time before building.
 - The user runs Claude Code locally in a terminal on the same machine as the daemon — no remote/SSH session, no containerization. (Channels run as a Claude Code subprocess and need stdio access, so this is a hard requirement of the channels feature, not just our choice.)
 
