@@ -387,6 +387,19 @@ def _bridge_pulse_source() -> None:
 def main():
     # Config precedence (highest to lowest):
     #     CLI arg > shell env > XDG config file > builtin default
+    # config.load() populates os.environ from $XDG_CONFIG_HOME/voice-stt/
+    # config for any key that isn't already set in the shell env, which
+    # means argparse's env-var defaults below pick them up automatically.
+    # _bridge_pulse_source must run AFTER config.load so the config file's
+    # VOICE_STT_PULSE_SOURCE gets translated into PULSE_SOURCE.
+    from . import config as _config
+    loaded = _config.load()
+    if loaded > 0:
+        print(
+            f"[voice-sttd] loaded {loaded} setting(s) from {_config.config_path()}",
+            file=sys.stderr,
+            flush=True,
+        )
     _bridge_pulse_source()
 
     p = argparse.ArgumentParser()

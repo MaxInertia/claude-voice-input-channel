@@ -1,0 +1,61 @@
+# voice-stt configuration.
+#
+# This file is installed by `/voice-stt:install` to
+# $XDG_CONFIG_HOME/voice-stt/config (typically ~/.config/voice-stt/config)
+# on first run. Edit the values below to override the defaults. Re-running
+# /voice-stt:install preserves existing files — you won't lose your edits.
+#
+# Shell env vars take precedence over anything set here, so one-off
+# overrides like `VOICE_STT_MODEL=small.en claude ...` still work without
+# editing this file.
+
+
+# --- Whisper / faster-whisper model settings -------------------------------
+
+# Which faster-whisper model to load.
+# Common options: tiny.en, base.en, small.en, medium.en, large-v3
+# Smaller = faster + less VRAM. medium.en is a good default on an 8 GB GPU.
+VOICE_STT_MODEL=medium.en
+
+# CTranslate2 inference device. `cuda` for any NVIDIA GPU, `cpu` otherwise.
+VOICE_STT_COMPUTE_DEVICE=cuda
+
+# CTranslate2 compute type (quantization).
+#   On GPU: float16 (default), int8_float16, int8
+#   On CPU: int8, float32
+# int8_float16 is a good middle ground if float16 OOMs on a small GPU.
+VOICE_STT_COMPUTE_TYPE=float16
+
+
+# --- Audio capture settings ------------------------------------------------
+
+# PortAudio backend passed to sounddevice.InputStream(device=...).
+# Accepts a device name substring (`pulse`, `pipewire`, `default`), a
+# numeric index, or a longer device name fragment.
+#
+#   `pulse`     — routes through pulseaudio / pipewire-pulse compat layer
+#                 and honors PULSE_SOURCE below. Recommended default.
+#   `pipewire`  — PortAudio's native PipeWire backend. Does NOT honor
+#                 PULSE_SOURCE.
+#   `default`   — system default without indirection.
+VOICE_STT_INPUT_DEVICE=pulse
+
+# Optional: raw PipeWire source `node.name` to capture from. Only needed
+# if you hit the "alternating silent buffers" bug (virtual noise-cancel
+# source toggles its mute state between consumer sessions). Find yours
+# with:
+#
+#     wpctl status                        # look under "Sources"
+#     wpctl inspect <id> | grep node.name
+#
+# Leave blank/commented to use the system default source.
+# VOICE_STT_PULSE_SOURCE=alsa_input.pci-0000_XX_XX.X.analog-stereo
+
+
+# --- PTT listener settings -------------------------------------------------
+
+# evdev key name the in-process PTT thread watches for press/release.
+# KEY_F13–KEY_F24 are unused on most keyboards and make good intermediary
+# keys for input-remapper / xremap / kmonad to map hardware buttons onto.
+# Leave empty to disable the PTT thread entirely.
+VOICE_STT_PTT_KEY=KEY_F20
