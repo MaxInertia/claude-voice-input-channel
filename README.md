@@ -93,21 +93,25 @@ audio, transcripts, or telemetry leave the machine.
 ## Run
 
 The `scripts/voice-stt-svc` helper launches both the daemon and the PTT
-listener in the background and tears them down again. Symlink it onto your
-PATH once:
+listener in the background and tears them down again. You can run it
+directly from the repo:
 
 ```bash
-ln -sf ~/projects/voice-stt/scripts/voice-stt-svc ~/bin/voice-stt-svc
+./scripts/voice-stt-svc start    # launch voice-sttd + voice-stt-ptt (backgrounded)
+./scripts/voice-stt-svc status   # show pids / running state
+./scripts/voice-stt-svc logs     # tail both log files
+./scripts/voice-stt-svc stop     # kill both, clean up sockets
+./scripts/voice-stt-svc restart
 ```
 
-Then:
+**Optional:** if you have a personal `bin` directory on your `PATH`
+(commonly `~/bin` or `~/.local/bin`), symlink the wrapper into it so you
+can call it as a bare `voice-stt-svc` from anywhere:
 
 ```bash
-voice-stt-svc start      # launch voice-sttd + voice-stt-ptt (backgrounded)
-voice-stt-svc status     # show pids / running state
-voice-stt-svc logs       # tail both log files
-voice-stt-svc stop       # kill both, clean up sockets
-voice-stt-svc restart
+# example — adjust the target directory to wherever your PATH picks up
+# personal binaries (check with: echo $PATH)
+ln -sf "$PWD/scripts/voice-stt-svc" ~/.local/bin/voice-stt-svc
 ```
 
 Logs land at `/tmp/voice-stt-daemon.log` and `/tmp/voice-stt-ptt.log`. There
@@ -243,13 +247,8 @@ two-step `/plugin` flow, and launching is a one-command wrapper.
    cd ~/projects/voice-stt/plugin/channel && bun install
    ```
 
-2. Symlink the launcher onto your PATH:
-   ```bash
-   ln -sf ~/projects/voice-stt/scripts/claude-voice ~/bin/claude-voice
-   ```
-
-3. Inside any Claude Code session, add this repo as a marketplace and install
-   the plugin:
+2. Inside any Claude Code session, add this repo as a marketplace and
+   install the plugin:
    ```
    /plugin marketplace add ~/projects/voice-stt
    /plugin install voice-stt@voice-stt-local
@@ -261,16 +260,24 @@ two-step `/plugin` flow, and launching is a one-command wrapper.
    `/plugin marketplace update voice-stt-local` followed by uninstall +
    reinstall of the plugin.
 
+3. **Optional:** if you have a personal `bin` directory on your `PATH`,
+   symlink the `claude-voice` launcher into it so you can call it from
+   anywhere:
+   ```bash
+   ln -sf "$PWD/scripts/claude-voice" ~/.local/bin/claude-voice
+   ```
+
 ### Run
 
-Start the daemon once:
+Start the daemon once (from the repo root, or via the optional `voice-stt-svc`
+symlink from earlier):
 ```bash
-voice-stt-svc start
+./scripts/voice-stt-svc start
 ```
 
 Then launch Claude Code via `claude-voice`:
 ```bash
-claude-voice           # any extra args are forwarded to `claude`
+./scripts/claude-voice           # any extra args are forwarded to `claude`
 ```
 
 The wrapper:
