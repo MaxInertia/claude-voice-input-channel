@@ -41,7 +41,7 @@ Two processes, tied to the lifetime of the Claude Code session:
 
 - **`voice-stt-channel.ts`** (TypeScript, Bun) — the MCP channel plugin
   spawned by Claude Code. Owns the Python daemon subprocess, reads its
-  stdout line-by-line, forwards each line as a `<channel source="voice-stt">`
+  stdout line-by-line, forwards each line as a `<channel source="dictate">`
   event into the session.
 - **`voice-sttd`** (Python) — spawned as a child of the channel plugin.
   Holds the Whisper model, captures audio, runs the PTT listener as a
@@ -61,11 +61,11 @@ Inside any Claude Code session:
 
 ```
 /plugin marketplace add MaxInertia/claude-voice-input-channel
-/plugin install voice-stt@voice-stt-local
-/voice-stt:install
+/plugin install dictate@maxinertia
+/dictate:install
 ```
 
-That's it. `/voice-stt:install` is a slash command shipped inside the
+That's it. `/dictate:install` is a slash command shipped inside the
 plugin that walks the agent through:
 
 - Checking system prerequisites (`uv`, `bun`, `libportaudio2`, NVIDIA
@@ -126,7 +126,7 @@ without editing anything.
 Launch Claude Code with the channel plugin active:
 
 ```bash
-claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local
+claude --dangerously-load-development-channels plugin:dictate@maxinertia
 ```
 
 (Custom channels aren't on the Anthropic-curated allowlist during the
@@ -141,7 +141,7 @@ HuggingFace model download (~1.5 GB for medium.en into
 `~/.cache/huggingface/`).
 
 Then hold your PTT key, speak, release. The transcript appears in the
-session as a `<channel source="voice-stt">` event and Claude responds
+session as a `<channel source="dictate">` event and Claude responds
 to it like any other user message.
 
 **Exiting Claude Code cleans everything up automatically.** No
@@ -175,7 +175,7 @@ sudo usermod -aG input $USER
 # log out and back in
 ```
 
-`/voice-stt:install` checks this and warns you if you're missing it.
+`/dictate:install` checks this and warns you if you're missing it.
 
 ### Example: gaming-mouse thumb button via input-remapper
 

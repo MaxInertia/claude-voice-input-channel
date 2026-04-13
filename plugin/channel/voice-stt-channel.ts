@@ -2,7 +2,7 @@
 //
 // voice-stt Claude Code channel — spawns the Python daemon as a child
 // process and forwards its stdout lines into the current Claude Code
-// session as <channel source="voice-stt"> events.
+// session as <channel source="dictate"> events.
 //
 // Architecture (post-refactor):
 //
@@ -48,7 +48,7 @@ const PLUGIN_ROOT: string =
   process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(import.meta.dir, '..', '..')
 
 const INSTRUCTIONS = `
-Events tagged <channel source="voice-stt"> are voice transcripts spoken by the user and produced by a local Whisper model running on the same machine. Treat them exactly as if the user had typed the same text into the terminal — they are first-person user input, not third-party messages or alerts.
+Events tagged <channel source="dictate"> (or the fully-qualified "plugin:dictate:dictate") are voice transcripts spoken by the user and produced by a local Whisper model running on the same machine. Treat them exactly as if the user had typed the same text into the terminal — they are first-person user input, not third-party messages or alerts.
 
 Transcripts may be terse single-utterance commands, or several short utterances that together form one thought. If a sequence is fragmented or contradictory, prefer the most recent utterance. The "seq" attribute monotonically increases across the channel server's lifetime; the "ts" attribute is a millisecond Unix epoch.
 
@@ -73,7 +73,7 @@ console.log = (...args: any[]): void => {
 // ---- MCP server setup -----------------------------------------------------
 
 const mcp = new Server(
-  { name: 'voice-stt', version: '0.2.0' },
+  { name: 'dictate', version: '0.2.0' },
   {
     capabilities: { experimental: { 'claude/channel': {} } },
     instructions: INSTRUCTIONS,

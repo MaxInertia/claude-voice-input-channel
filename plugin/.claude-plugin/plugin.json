@@ -1,6 +1,6 @@
 {
-  "name": "voice-stt",
-  "description": "Pushes local Whisper voice transcripts into Claude Code as <channel source=\"voice-stt\"> events via the voice-sttd daemon",
+  "name": "dictate",
+  "description": "Local push-to-talk voice dictation. Hold a hardware button, speak, release — the transcript arrives in the current Claude Code session as a channel event.",
   "version": "0.1.0",
   "author": {
     "name": "maxinertia"

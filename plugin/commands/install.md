@@ -163,7 +163,7 @@ Tell the user:
    Code with the channel enabled. Custom channels are gated behind
    `--dangerously-load-development-channels` during the research preview:
    ```
-   claude --dangerously-load-development-channels plugin:voice-stt@voice-stt-local
+   claude --dangerously-load-development-channels plugin:dictate@maxinertia
    ```
    They can alias that in their shell rc if they want muscle memory.
 

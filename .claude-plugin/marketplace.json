@@ -1,20 +1,20 @@
 {
-  "name": "voice-stt-local",
+  "name": "maxinertia",
   "owner": {
     "name": "maxinertia"
   },
   "metadata": {
-    "description": "Personal marketplace hosting the voice-stt channel plugin",
+    "description": "maxinertia's personal Claude Code plugin marketplace",
     "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "voice-stt",
+      "name": "dictate",
       "source": "./plugin",
-      "description": "Pushes local Whisper voice transcripts into Claude Code as channel events",
+      "description": "Local push-to-talk voice dictation — pushes Whisper transcripts into the current Claude Code session as channel events",
       "version": "0.1.0",
       "category": "productivity",
-      "tags": ["voice", "stt", "dictation", "channel", "accessibility"]
+      "tags": ["voice", "dictation", "stt", "whisper", "channel", "accessibility"]
     }
   ]
 }
