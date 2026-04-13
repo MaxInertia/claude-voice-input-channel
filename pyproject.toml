@@ -16,9 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-voice-stt = "voice_stt.client:main"
 voice-sttd = "voice_stt.daemon:main"
-voice-stt-ptt = "voice_stt.ptt_listener:main"
 
 [build-system]
 requires = ["hatchling"]

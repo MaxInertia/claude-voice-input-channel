@@ -26,8 +26,10 @@ import argparse
 import ctypes
 import os
 import queue
+import select
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -50,10 +52,40 @@ def _preload_cuda_libs():
 
 _preload_cuda_libs()
 
+import evdev
 import numpy as np
 import sounddevice as sd
 
 from . import SAMPLE_RATE
+
+# How often the PTT worker rescans for newly-attached or freshly-recreated
+# evdev devices. Keeps the listener self-healing across input-remapper
+# reloads (which destroy and recreate the forwarded virtual device) and USB
+# replugs. Inherited from the ptt_listener standalone's rescan loop (see
+# commit 5a3f391 on the review-fixes branch).
+PTT_RESCAN_INTERVAL_SEC = 1.0
+
+
+def _find_keyboards(trigger: int) -> list[evdev.InputDevice]:
+    devs: list[evdev.InputDevice] = []
+    for path in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(path)
+        except (PermissionError, OSError):
+            continue
+        caps = d.capabilities().get(evdev.ecodes.EV_KEY, [])
+        if trigger in caps:
+            devs.append(d)
+    return devs
+
+
+def _close_device(fd_to_dev: dict[int, evdev.InputDevice], fd: int) -> None:
+    dev = fd_to_dev.pop(fd, None)
+    if dev is not None:
+        try:
+            dev.close()
+        except Exception:
+            pass
 
 
 def _log(msg: str) -> None:
@@ -68,12 +100,23 @@ class Daemon:
         device: str,
         compute_type: str,
         input_device: str | int | None,
+        ptt_key: str | None = None,
     ):
         from faster_whisper import WhisperModel  # lazy import keeps --help fast
 
         _log(f"loading model={model_name} device={device} compute={compute_type}")
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
         _log("model ready")
+
+        # PTT key is optional: None means "no in-process PTT thread" (caller
+        # drives start/stop externally via stdin commands). A valid evdev
+        # key name spins up the worker thread below.
+        self._ptt_key = ptt_key
+        self._ptt_trigger: int | None = None
+        if ptt_key:
+            self._ptt_trigger = evdev.ecodes.ecodes.get(ptt_key)
+            if self._ptt_trigger is None:
+                _log(f"unknown PTT key {ptt_key!r}; PTT thread disabled")
 
         self._lock = threading.Lock()
         self._capturing = False
@@ -107,6 +150,22 @@ class Daemon:
             daemon=True,
         )
         self._transcribe_thread.start()
+
+        # PTT evdev listener thread. Watches for the configured key's
+        # press/release edges across every keyboard device that advertises
+        # the key in its capability list, and calls start_recording /
+        # stop_recording directly (no IPC — same process). The thread
+        # self-heals across device churn (input-remapper reloads, USB
+        # replugs) via a periodic rescan loop.
+        if self._ptt_trigger is not None:
+            self._ptt_thread = threading.Thread(
+                target=self._ptt_worker,
+                name="voice-stt-ptt",
+                daemon=True,
+            )
+            self._ptt_thread.start()
+        else:
+            self._ptt_thread = None
 
     # ---- audio capture ----
 
@@ -154,6 +213,96 @@ class Daemon:
                 _log(f"transcription error: {e}")
             finally:
                 self._transcribe_queue.task_done()
+
+    # ---- PTT evdev listener (in-process thread) ----
+
+    def _ptt_worker(self) -> None:
+        """Watch evdev for the configured PTT key's press/release edges.
+
+        Press → self.start_recording(). Release → self.stop_recording().
+        Calls are direct method invocations — no IPC since the worker lives
+        inside the daemon process. The loop rescans all keyboard devices
+        every PTT_RESCAN_INTERVAL_SEC (and immediately after any device
+        disappears or is freshly attached), so it self-heals across
+        input-remapper reloads and USB replugs.
+
+        Any evdev permission errors at startup are logged but don't crash
+        the daemon — the thread just keeps rescanning, and a later udev/
+        input-group fix will light it up automatically.
+        """
+        trigger = self._ptt_trigger
+        assert trigger is not None  # guarded in __init__
+        key_name = self._ptt_key or f"code={trigger}"
+
+        devs = _find_keyboards(trigger)
+        if devs:
+            _log(f"PTT: listening for {key_name} on {len(devs)} devices")
+            for d in devs:
+                _log(f"PTT:   - {d.path}  {d.name}")
+        else:
+            _log(
+                f"PTT: no devices advertise {key_name} yet; will rescan every "
+                f"{PTT_RESCAN_INTERVAL_SEC:.1f}s"
+            )
+
+        fd_to_dev: dict[int, evdev.InputDevice] = {d.fd: d for d in devs}
+        last_scan = time.monotonic()
+
+        while True:
+            # Periodic rescan + immediate rescan when there are no devices.
+            now = time.monotonic()
+            if not fd_to_dev or now - last_scan >= PTT_RESCAN_INTERVAL_SEC:
+                new_devs = _find_keyboards(trigger)
+                new_paths = {d.path for d in new_devs}
+                old_paths = {d.path for d in fd_to_dev.values()}
+                added = [d for d in new_devs if d.path not in old_paths]
+                for d in added:
+                    fd_to_dev[d.fd] = d
+                for fd in list(fd_to_dev):
+                    if fd_to_dev[fd].path not in new_paths:
+                        _close_device(fd_to_dev, fd)
+                if added:
+                    _log(f"PTT: attached {len(added)} new device(s)")
+                    for d in added:
+                        _log(f"PTT:   + {d.path}  {d.name}")
+                last_scan = now
+
+            if not fd_to_dev:
+                time.sleep(PTT_RESCAN_INTERVAL_SEC)
+                continue
+
+            try:
+                r, _, _ = select.select(list(fd_to_dev), [], [], PTT_RESCAN_INTERVAL_SEC)
+            except (OSError, ValueError):
+                # A watched fd went invalid between iterations. Force a
+                # full rescan on the next loop pass.
+                for fd in list(fd_to_dev):
+                    _close_device(fd_to_dev, fd)
+                last_scan = 0.0
+                continue
+
+            for fd in r:
+                dev = fd_to_dev.get(fd)
+                if dev is None:
+                    continue
+                try:
+                    events = list(dev.read())
+                except OSError as e:
+                    _log(f"PTT: device {dev.path} gone ({e}); dropping")
+                    _close_device(fd_to_dev, fd)
+                    last_scan = 0.0  # force rescan next pass
+                    continue
+
+                for ev in events:
+                    if ev.type != evdev.ecodes.EV_KEY or ev.code != trigger:
+                        continue
+                    if ev.value == 1:  # key down
+                        _log("PTT: press → start")
+                        self.start_recording()
+                    elif ev.value == 0:  # key up
+                        _log("PTT: release → stop")
+                        self.stop_recording()
+                    # ev.value == 2 is autorepeat, ignore
 
     def _transcribe_and_emit(self, audio: np.ndarray) -> None:
         if audio.size < SAMPLE_RATE // 4:  # <0.25s, skip
@@ -271,12 +420,26 @@ def main():
             "Env: VOICE_STT_INPUT_DEVICE."
         ),
     )
+    p.add_argument(
+        "--ptt-key",
+        default=os.environ.get("VOICE_STT_PTT_KEY", "KEY_F20"),
+        help=(
+            "evdev key name the in-process PTT thread watches for press/"
+            "release. F13-F24 are unused on most keyboards and make good "
+            "intermediary keys for remapper tools (input-remapper, xremap, "
+            "kmonad) to target. Pass an empty string to disable the PTT "
+            "thread entirely (useful if the parent process drives start/"
+            "stop via stdin). "
+            "Env: VOICE_STT_PTT_KEY."
+        ),
+    )
     args = p.parse_args()
 
     input_device = _parse_input_device(
         args.input_device if args.input_device != "default" else None
     )
-    d = Daemon(args.model, args.device, args.compute_type, input_device)
+    ptt_key = args.ptt_key or None  # empty string -> None -> no PTT thread
+    d = Daemon(args.model, args.device, args.compute_type, input_device, ptt_key)
     try:
         d.run_stdin_loop()
     except KeyboardInterrupt:
