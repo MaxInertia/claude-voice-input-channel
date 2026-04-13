@@ -1,0 +1,24 @@
+[Unit]
+Description=voice-stt daemon (local Whisper STT + mic capture + broadcast socket)
+Documentation=https://github.com/MaxInertia/claude-voice-input-channel
+# Not tied to graphical-session.target — the daemon doesn't need a display,
+# and we want it to survive user login/logout within a session if you
+# enable linger.
+
+[Service]
+Type=simple
+WorkingDirectory=@VOICE_STT_ROOT@
+EnvironmentFile=-@VOICE_STT_ROOT@/.env
+# PATH needs uv. Default systemd user PATH is minimal; append the usual
+# personal-bin locations so uv is found regardless of where it was installed.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.local/bin/uv run --project @VOICE_STT_ROOT@ voice-sttd
+Restart=on-failure
+RestartSec=3
+# Send stdout and stderr to the user journal. View with:
+#   journalctl --user -u voice-sttd -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

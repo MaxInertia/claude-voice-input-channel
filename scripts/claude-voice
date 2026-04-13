@@ -5,45 +5,72 @@
 # clear error instead of a silently-reconnecting channel server that never
 # delivers any transcripts.
 #
-# Does NOT auto-start the daemon — lifecycle management lives in
-# voice-stt-svc. If the daemon is down, this script tells you how to start
-# it and exits.
+# Does NOT auto-start the daemon — lifecycle management lives with systemd
+# (see scripts/install-systemd-units) or voice-stt-svc. If the daemon is
+# down, this script tells you how to start it and exits.
 #
 # Any extra args are forwarded to `claude`.
 
 set -euo pipefail
 
-SVC=${VOICE_STT_SVC:-voice-stt-svc}
 CLAUDE=${CLAUDE_BIN:-claude}
-
-if ! command -v "$SVC" >/dev/null 2>&1; then
-    cat >&2 <<EOF
-error: '$SVC' not found on PATH.
-       Symlink it once with:
-           ln -sf ~/projects/voice-stt/scripts/voice-stt-svc ~/bin/voice-stt-svc
-EOF
-    exit 1
-fi
 
 if ! command -v "$CLAUDE" >/dev/null 2>&1; then
     echo "error: '$CLAUDE' not found on PATH" >&2
     exit 1
 fi
 
-status_output=$("$SVC" status 2>&1 || true)
-daemon_state=$(printf '%s\n' "$status_output" | awk '/^daemon:/ {print $2; exit}')
-ptt_state=$(printf '%s\n' "$status_output" | awk '/^ptt:/ {print $2; exit}')
+# Two possible health-check paths depending on whether the user has
+# installed the systemd units yet. Systemd is preferred — is-active is
+# authoritative and handles the "svc reports running but process is dead"
+# class of bugs by design.
+daemon_up=0
+ptt_up=0
+health_source=""
 
-if [[ "$daemon_state" != "running" ]]; then
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user list-unit-files voice-sttd.service >/dev/null 2>&1; then
+    health_source="systemctl --user"
+    if systemctl --user is-active --quiet voice-sttd.service; then
+        daemon_up=1
+    fi
+    if systemctl --user is-active --quiet voice-stt-ptt.service; then
+        ptt_up=1
+    fi
+else
+    # Fall back to the voice-stt-svc status output parser. Only used when
+    # systemd units aren't installed.
+    SVC=${VOICE_STT_SVC:-voice-stt-svc}
+    if ! command -v "$SVC" >/dev/null 2>&1; then
+        cat >&2 <<EOF
+error: neither systemd user units nor '$SVC' are available to check
+       daemon health. Install the systemd units with:
+           scripts/install-systemd-units
+EOF
+        exit 1
+    fi
+    health_source="$SVC status"
+    status_output=$("$SVC" status 2>&1 || true)
+    if printf '%s\n' "$status_output" | awk '/^daemon:/ {exit $2 == "running" ? 0 : 1}'; then
+        daemon_up=1
+    fi
+    if printf '%s\n' "$status_output" | awk '/^ptt:/ {exit $2 == "running" ? 0 : 1}'; then
+        ptt_up=1
+    fi
+fi
+
+if (( daemon_up == 0 )); then
     cat >&2 <<EOF
-error: voice-stt daemon is not running — refusing to launch Claude Code with
-       the voice-stt channel, because it would have no transcripts to deliver.
+error: voice-stt daemon is not running — refusing to launch Claude Code
+       with the voice-stt channel, because it would have no transcripts
+       to deliver.
 
-       current status from '$SVC status':
-$(printf '%s\n' "$status_output" | sed 's/^/         /')
+       checked via: $health_source
 
        start it with:
-           $SVC start
+           systemctl --user start voice-sttd.service voice-stt-ptt.service
+         # or, if you haven't installed the systemd units yet:
+           voice-stt-svc start
 
        then rerun:
            $0 $*
@@ -51,9 +78,9 @@ EOF
     exit 1
 fi
 
-if [[ "$ptt_state" != "running" ]]; then
+if (( ptt_up == 0 )); then
     echo "warning: voice-stt-ptt listener is not running — your PTT key will not trigger recording" >&2
-    echo "         run '$SVC start' to bring it up" >&2
+    echo "         systemctl --user start voice-stt-ptt.service" >&2
 fi
 
 echo "voice-stt daemon: running — launching Claude Code with voice-stt channel"

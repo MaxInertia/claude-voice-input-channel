@@ -92,34 +92,44 @@ audio, transcripts, or telemetry leave the machine.
 
 ## Run
 
-The `scripts/voice-stt-svc` helper launches both the daemon and the PTT
-listener in the background and tears them down again. You can run it
-directly from the repo:
+voice-stt runs as two systemd user services: `voice-sttd.service` (the
+Python daemon) and `voice-stt-ptt.service` (the evdev PTT listener).
+Install them from the checkout with the included script:
 
 ```bash
-./scripts/voice-stt-svc start    # launch voice-sttd + voice-stt-ptt (backgrounded)
-./scripts/voice-stt-svc status   # show pids / running state
-./scripts/voice-stt-svc logs     # tail both log files
-./scripts/voice-stt-svc stop     # kill both, clean up sockets
-./scripts/voice-stt-svc restart
+./scripts/install-systemd-units
 ```
 
-**Optional:** if you have a personal `bin` directory on your `PATH`
-(commonly `~/bin` or `~/.local/bin`), symlink the wrapper into it so you
-can call it as a bare `voice-stt-svc` from anywhere:
+The script reads the templates in `scripts/systemd/`, substitutes the
+current checkout path, writes the unit files to
+`~/.config/systemd/user/`, and runs `systemctl --user daemon-reload`.
+
+Then enable and start the services:
 
 ```bash
-# example — adjust the target directory to wherever your PATH picks up
-# personal binaries (check with: echo $PATH)
-ln -sf "$PWD/scripts/voice-stt-svc" ~/.local/bin/voice-stt-svc
+systemctl --user enable --now voice-sttd.service voice-stt-ptt.service
 ```
 
-Logs land at `/tmp/voice-stt-daemon.log` and `/tmp/voice-stt-ptt.log`. There
-is no autostart on boot — you launch it when you want it.
+Manage them with standard systemctl commands:
 
-Once `voice-stt-svc start` reports both running, hold your configured PTT
-key and speak. To consume the transcripts, run the `listen` consumer in
-the foreground:
+```bash
+systemctl --user status voice-sttd.service
+systemctl --user restart voice-sttd.service voice-stt-ptt.service
+systemctl --user stop voice-sttd.service voice-stt-ptt.service
+journalctl --user -u voice-sttd.service -f   # live log
+```
+
+**Optional:** to keep the services running across SSH sessions and login/
+logout (useful if you leave a Claude Code session open in a background
+terminal), enable user lingering once:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+Once `systemctl --user is-active voice-sttd.service` returns `active`,
+hold your configured PTT key and speak. To consume the transcripts, run
+the `listen` consumer in the foreground:
 
 ```bash
 cd ~/projects/voice-stt
@@ -131,6 +141,17 @@ uv run voice-stt listen | your-llm-cli
 Or read directly from the output socket with any tool:
 ```bash
 socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/voice-stt/out.sock"
+```
+
+### Legacy: `voice-stt-svc` wrapper
+
+For muscle memory and non-systemd systems, `scripts/voice-stt-svc`
+remains as a thin wrapper. If the systemd units are installed, it
+forwards to `systemctl --user`. If they're not, it falls back to an
+in-repo pgrep-based supervisor (not recommended — install the units):
+
+```bash
+./scripts/voice-stt-svc start|stop|restart|status|logs
 ```
 
 ## Push-to-talk hotkey
