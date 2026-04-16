@@ -8,6 +8,19 @@ report the outcome of each step concisely. If any step fails in a way
 that blocks later steps, stop and explain what went wrong before
 continuing.
 
+## 0. Detect platform
+
+Run `uname -s` to determine the platform:
+- **Linux** — follow the Linux path in each step below.
+- **Darwin** — follow the macOS path.
+
+Also run `uname -m` to detect architecture:
+- `arm64` on macOS = Apple Silicon (M1/M2/M3) — use `cpu` compute device with `int8` type.
+- `x86_64` on macOS = Intel Mac — use `cpu` with `int8`.
+- `x86_64` on Linux = standard x86 — check for NVIDIA GPU.
+
+Store these as variables for the rest of the steps.
+
 ## 1. Prereq checks
 
 Verify these tools exist. Report each as present/missing. Don't stop on
@@ -18,6 +31,9 @@ at the end of this step, along with install commands. Tools:
   `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - `bun` — TypeScript runtime used by the channel server, required.
   Install with `curl -fsSL https://bun.sh/install | bash`
+
+### Linux only
+
 - `nvidia-smi` — NVIDIA driver — optional but strongly recommended.
   If missing, warn the user that the daemon will need
   `VOICE_STT_COMPUTE_DEVICE=cpu` in their config and will be much
@@ -40,6 +56,13 @@ check to that package manager (dnf/rpm on Fedora, pacman on Arch,
 etc.) or just tell the user to install portaudio via their package
 manager and move on.
 
+### macOS only
+
+Skip `nvidia-smi`, `libportaudio2`, `dpkg`, and `input` group checks.
+PortAudio is bundled with the `sounddevice` Python wheel on macOS.
+CoreAudio is always available. No GPU driver needed — CPU inference
+works well on Apple Silicon.
+
 ## 2. Install Python dependencies
 
 Run in the plugin's cached directory:
@@ -49,9 +72,12 @@ cd "${CLAUDE_PLUGIN_ROOT}" && uv sync
 ```
 
 Report the output. On first run this downloads the faster-whisper,
-CTranslate2, sounddevice, evdev, and cuBLAS/cuDNN wheels (~200 MB
-total). Subsequent runs are fast because `uv`'s global wheel cache
-lives at `~/.cache/uv` and persists across plugin reinstalls.
+CTranslate2, sounddevice, and numpy wheels. On Linux it also installs
+evdev and CUDA wheels (~200 MB total). On macOS, the Linux-only deps
+are automatically skipped via platform markers in pyproject.toml.
+
+The faster-whisper model (`medium.en`, ~1 GB) is downloaded on first
+daemon startup, not during `uv sync`.
 
 If `uv sync` fails, stop and report the error. Common causes: no
 Python 3.10+ available (uv will auto-install it, but needs network
@@ -73,8 +99,8 @@ Report the output.
 
 The config file lives at `$XDG_CONFIG_HOME/voice-stt/config`, which
 defaults to `$HOME/.config/voice-stt/config` if `XDG_CONFIG_HOME` is
-unset. Determine the path once and use it consistently for the rest of
-this step.
+unset (on both Linux and macOS). Determine the path once and use it
+consistently for the rest of this step.
 
 Check whether the file exists:
 
@@ -90,19 +116,37 @@ Check whether the file exists:
   cp "${CLAUDE_PLUGIN_ROOT}/config.template" "$CONFIG_PATH"
   chmod 600 "$CONFIG_PATH"
   ```
-  Then tell the user:
-  - the path of the config file
-  - what values they might want to edit:
-    - `VOICE_STT_MODEL` — model size (medium.en default is good for
-      an 8 GB GPU; use small.en for smaller GPUs)
-    - `VOICE_STT_PULSE_SOURCE` — uncomment and set this if they see
-      alternating-silence dictation failures (means their default
-      PipeWire source is a noise-cancel virtual node; bypass it with
-      the raw hardware source name from `wpctl status`)
-    - `VOICE_STT_PTT_KEY` — which evdev key the PTT thread watches
-      for (default KEY_F20)
 
-## 5. Migration from legacy ~/projects/voice-stt/.env
+  ### Linux config guidance
+
+  Tell the user what values they might want to edit:
+  - `VOICE_STT_MODEL` — model size (medium.en default is good for
+    an 8 GB GPU; use small.en for smaller GPUs)
+  - `VOICE_STT_PULSE_SOURCE` — uncomment and set this if they see
+    alternating-silence dictation failures (means their default
+    PipeWire source is a noise-cancel virtual node; bypass it with
+    the raw hardware source name from `wpctl status`)
+  - `VOICE_STT_PTT_KEY` — which evdev key the PTT thread watches
+    for (default KEY_F20)
+
+  ### macOS config guidance
+
+  Edit the config to set macOS-appropriate defaults:
+  ```
+  sed -i '' 's/VOICE_STT_COMPUTE_DEVICE=cuda/VOICE_STT_COMPUTE_DEVICE=cpu/' "$CONFIG_PATH"
+  sed -i '' 's/VOICE_STT_COMPUTE_TYPE=float16/VOICE_STT_COMPUTE_TYPE=int8/' "$CONFIG_PATH"
+  sed -i '' 's/VOICE_STT_INPUT_DEVICE=pulse/VOICE_STT_INPUT_DEVICE=default/' "$CONFIG_PATH"
+  sed -i '' 's/VOICE_STT_PTT_KEY=KEY_F20/VOICE_STT_PTT_KEY=/' "$CONFIG_PATH"
+  ```
+
+  Tell the user:
+  - CPU inference with `int8` is the default and works well on Apple Silicon.
+  - PTT key is disabled — use `voice-stt toggle` via a keyboard shortcut instead.
+  - `VOICE_STT_MODEL` — `medium.en` is good; use `small.en` if latency is too high.
+
+## 5. Migration from legacy ~/projects/voice-stt/.env (Linux only)
+
+Skip this step entirely on macOS.
 
 Check whether `$HOME/projects/voice-stt/.env` exists AND we just
 created the user config in step 4 (i.e. this is a fresh install that
@@ -121,7 +165,9 @@ config file. If yes, append the non-default lines from the old file to
 the new config, preserving comments. Don't delete the old file — leave
 it in place so the user can verify the migration manually.
 
-## 6. Migration from legacy systemd user units
+## 6. Migration from legacy systemd user units (Linux only)
+
+Skip this step entirely on macOS.
 
 Check for `$HOME/.config/systemd/user/voice-sttd.service` — if present,
 the user was on the previous architecture that ran voice-stt as a
@@ -150,10 +196,11 @@ Confirm the end state:
 ```
 ls -l "$CONFIG_PATH"
 ls -l "${CLAUDE_PLUGIN_ROOT}/.venv/bin/voice-sttd" 2>/dev/null || echo "voice-sttd entrypoint missing"
+ls -l "${CLAUDE_PLUGIN_ROOT}/.venv/bin/voice-stt" 2>/dev/null || echo "voice-stt CLI missing"
 ls -l "${CLAUDE_PLUGIN_ROOT}/channel/node_modules" 2>/dev/null | head -1 || echo "channel node_modules missing"
 ```
 
-All three should exist. If any is missing, report which step failed.
+All four should exist. If any is missing, report which step failed.
 
 ## 8. Print next steps
 
@@ -167,12 +214,39 @@ Tell the user:
    ```
    They can alias that in their shell rc if they want muscle memory.
 
+### Linux: PTT key binding
+
 2. **To bind a hardware button to the PTT key**, they need to map a
    physical key on their keyboard/mouse to the evdev key named in
    `VOICE_STT_PTT_KEY` (default `KEY_F20`). The README covers several
    key remappers: input-remapper (GUI), xremap (config-based), kmonad
    (layer-based). None of this can be automated — it depends on their
    hardware.
+
+### macOS: Global keyboard shortcut for toggle
+
+2. **To set up push-to-toggle**, configure a global keyboard shortcut
+   that runs the `voice-stt toggle` command. The CLI is installed at:
+   ```
+   ${CLAUDE_PLUGIN_ROOT}/.venv/bin/voice-stt
+   ```
+
+   Options for binding the shortcut:
+   - **Automator + System Settings**: Create a Quick Action in Automator
+     that runs a shell script with the full path to `voice-stt toggle`.
+     Then assign a keyboard shortcut in System Settings → Keyboard →
+     Keyboard Shortcuts → Services.
+   - **Raycast**: Add a Script Command that runs the `voice-stt toggle`
+     command and assign a hotkey.
+   - **Alfred**: Create a workflow with a hotkey trigger that runs
+     the command.
+
+   Alternatively, symlink the CLI to a directory on your `$PATH`:
+   ```
+   ln -sf "${CLAUDE_PLUGIN_ROOT}/.venv/bin/voice-stt" /usr/local/bin/voice-stt
+   ```
+
+### Both platforms
 
 3. **The daemon starts automatically** when Claude Code launches with
    the channel plugin active. Nothing to manage — no `systemctl`, no
