@@ -50,9 +50,12 @@ def _preload_cuda_libs():
                 pass
 
 
-_preload_cuda_libs()
+if sys.platform == "linux":
+    _preload_cuda_libs()
 
-import evdev
+if sys.platform == "linux":
+    import evdev
+
 import numpy as np
 import sounddevice as sd
 
@@ -121,6 +124,8 @@ class Daemon:
         self._lock = threading.Lock()
         self._capturing = False
         self._frames: list[np.ndarray] = []
+        self._toggle_timer: threading.Timer | None = None
+        self._toggle_max_duration: float = 120.0
 
         # Persistent input stream — kept open for the daemon lifetime and
         # gated by self._capturing. See the comments in the Phase 2 refactor
@@ -174,6 +179,20 @@ class Daemon:
             print(f"[voice-sttd] audio status: {status}", file=sys.stderr, flush=True)
         if self._capturing:
             self._frames.append(indata[:, 0].copy())
+
+    @staticmethod
+    def _beep(freq: float = 880.0, duration: float = 0.08) -> None:
+        """Play a short sine-wave beep on the default output device."""
+        try:
+            t = np.linspace(0, duration, int(44100 * duration), endpoint=False)
+            # Apply a short fade-out to avoid click artifacts.
+            envelope = np.ones_like(t)
+            fade = int(44100 * 0.01)
+            envelope[-fade:] = np.linspace(1, 0, fade)
+            tone = (0.3 * np.sin(2 * np.pi * freq * t) * envelope).astype(np.float32)
+            sd.play(tone, samplerate=44100)
+        except Exception:
+            pass  # audio feedback is best-effort
 
     def start_recording(self) -> None:
         with self._lock:
@@ -330,26 +349,55 @@ class Daemon:
 
     # ---- lifecycle ----
 
-    def run_stdin_loop(self) -> None:
-        """Main loop: read line-delimited commands from stdin until EOF.
+    def toggle_recording(self) -> None:
+        """Toggle recording on/off. Used by push-to-toggle mode."""
+        if self._capturing:
+            self._cancel_toggle_timer()
+            self.stop_recording()
+            self._beep(440.0)   # lower tone = stopped
+        else:
+            self._beep(880.0)   # higher tone = recording
+            self.start_recording()
+            self._start_toggle_timer()
 
-        Commands:
-            ``start``  — begin recording
-            ``stop``   — stop recording and queue for transcription
-            (unknown commands are silently ignored; the daemon never
-             trusts its own stdin for anything beyond these two verbs)
-        """
+    def _start_toggle_timer(self) -> None:
+        """Auto-stop after max duration so a forgotten toggle doesn't record forever."""
+        if self._toggle_max_duration <= 0:
+            return
+        self._cancel_toggle_timer()
+        self._toggle_timer = threading.Timer(
+            self._toggle_max_duration, self._toggle_timeout,
+        )
+        self._toggle_timer.daemon = True
+        self._toggle_timer.start()
+
+    def _cancel_toggle_timer(self) -> None:
+        if self._toggle_timer is not None:
+            self._toggle_timer.cancel()
+            self._toggle_timer = None
+
+    def _toggle_timeout(self) -> None:
+        _log(f"toggle auto-stop after {self._toggle_max_duration:.0f}s")
+        self.stop_recording()
+
+    def dispatch_command(self, cmd: str) -> None:
+        """Dispatch a command string from any source (stdin, socket)."""
+        if cmd == "start":
+            self.start_recording()
+        elif cmd == "stop":
+            self.stop_recording()
+        elif cmd == "toggle":
+            self.toggle_recording()
+        elif cmd == "":
+            pass
+        else:
+            _log(f"unknown command: {cmd!r}")
+
+    def run_stdin_loop(self) -> None:
+        """Main loop: read line-delimited commands from stdin until EOF."""
         _log("ready; awaiting stdin commands")
         for raw in sys.stdin:
-            cmd = raw.strip()
-            if cmd == "start":
-                self.start_recording()
-            elif cmd == "stop":
-                self.stop_recording()
-            elif cmd == "":
-                continue
-            else:
-                _log(f"unknown command: {cmd!r}")
+            self.dispatch_command(raw.strip())
 
     def shutdown(self) -> None:
         """Best-effort cleanup — called from main()'s finally block."""
@@ -419,19 +467,28 @@ def main():
     )
     p.add_argument(
         "--device",
-        default=os.environ.get("VOICE_STT_COMPUTE_DEVICE", "cuda"),
+        default=os.environ.get(
+            "VOICE_STT_COMPUTE_DEVICE",
+            "cuda" if sys.platform == "linux" else "cpu",
+        ),
         help="CTranslate2 inference device: cuda or cpu. "
              "Env: VOICE_STT_COMPUTE_DEVICE.",
     )
     p.add_argument(
         "--compute-type",
-        default=os.environ.get("VOICE_STT_COMPUTE_TYPE", "float16"),
+        default=os.environ.get(
+            "VOICE_STT_COMPUTE_TYPE",
+            "float16" if sys.platform == "linux" else "int8",
+        ),
         help="CTranslate2 compute type: float16 (GPU), int8_float16, int8 (CPU). "
              "Env: VOICE_STT_COMPUTE_TYPE.",
     )
     p.add_argument(
         "--input-device",
-        default=os.environ.get("VOICE_STT_INPUT_DEVICE", "pulse"),
+        default=os.environ.get(
+            "VOICE_STT_INPUT_DEVICE",
+            "pulse" if sys.platform == "linux" else "default",
+        ),
         help=(
             "Audio input device passed to sounddevice.InputStream(device=...). "
             "Accepts a numeric index or a substring of the device name. "
@@ -443,7 +500,10 @@ def main():
     )
     p.add_argument(
         "--ptt-key",
-        default=os.environ.get("VOICE_STT_PTT_KEY", "KEY_F20"),
+        default=os.environ.get(
+            "VOICE_STT_PTT_KEY",
+            "KEY_F20" if sys.platform == "linux" else "",
+        ),
         help=(
             "evdev key name the in-process PTT thread watches for press/"
             "release. F13-F24 are unused on most keyboards and make good "
@@ -461,11 +521,26 @@ def main():
     )
     ptt_key = args.ptt_key or None  # empty string -> None -> no PTT thread
     d = Daemon(args.model, args.device, args.compute_type, input_device, ptt_key)
+
+    # Toggle max duration (auto-stop safety for toggle mode).
+    try:
+        d._toggle_max_duration = float(
+            os.environ.get("VOICE_STT_TOGGLE_MAX_DURATION", "120")
+        )
+    except ValueError:
+        pass
+
+    # Unix domain socket for external IPC (toggle/start/stop from shortcuts).
+    from .socket_server import SocketServer
+    sock = SocketServer(d.dispatch_command)
+    sock.start()
+
     try:
         d.run_stdin_loop()
     except KeyboardInterrupt:
         _log("interrupted")
     finally:
+        sock.shutdown()
         d.shutdown()
         _log("bye")
 

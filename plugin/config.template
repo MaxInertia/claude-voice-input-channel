@@ -57,5 +57,12 @@ VOICE_STT_INPUT_DEVICE=pulse
 # evdev key name the in-process PTT thread watches for press/release.
 # KEY_F13–KEY_F24 are unused on most keyboards and make good intermediary
 # keys for input-remapper / xremap / kmonad to map hardware buttons onto.
-# Leave empty to disable the PTT thread entirely.
+# Leave empty to disable the PTT thread entirely and use toggle mode
+# instead (press once to start, again to stop — via `voice-stt toggle`).
+# Linux default: KEY_F20. macOS default: empty (toggle mode).
 VOICE_STT_PTT_KEY=KEY_F20
+
+# Max recording duration in seconds (safety for toggle mode).
+# Auto-stops recording if the user forgets to toggle off.
+# Set to 0 to disable. Only applies when PTT key is unset.
+VOICE_STT_TOGGLE_MAX_DURATION=120

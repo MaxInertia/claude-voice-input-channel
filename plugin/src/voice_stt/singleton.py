@@ -32,19 +32,12 @@ from __future__ import annotations
 import fcntl
 import os
 import sys
-from pathlib import Path
+
+from . import runtime_dir
 
 
-def _lock_path() -> Path:
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    d = Path(runtime) / "voice-stt"
-    d.mkdir(mode=0o700, exist_ok=True)
-    # If the directory already existed with looser perms, tighten them.
-    try:
-        d.chmod(0o700)
-    except OSError:
-        pass
-    return d / "daemon.lock"
+def _lock_path():
+    return runtime_dir() / "daemon.lock"
 
 
 def acquire_or_exit() -> None:

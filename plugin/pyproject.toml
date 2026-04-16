@@ -1,7 +1,7 @@
 [project]
 name = "voice-stt"
 version = "0.1.0"
-description = "Local push-to-talk speech-to-text daemon (faster-whisper + CUDA)"
+description = "Local push-to-talk speech-to-text daemon (faster-whisper)"
 license = { text = "MIT" }
 authors = [{ name = "maxinertia" }]
 requires-python = ">=3.10"
@@ -9,13 +9,14 @@ dependencies = [
     "faster-whisper>=1.0.3",
     "sounddevice>=0.4.7",
     "numpy>=1.26",
-    "nvidia-cublas-cu12",
-    "nvidia-cudnn-cu12>=9",
-    "evdev>=1.6",
+    'evdev>=1.6; sys_platform == "linux"',
+    'nvidia-cublas-cu12; sys_platform == "linux"',
+    'nvidia-cudnn-cu12>=9; sys_platform == "linux"',
 ]
 
 [project.scripts]
 voice-sttd = "voice_stt.daemon:main"
+voice-stt = "voice_stt.cli:main"
 
 [build-system]
 requires = ["hatchling"]
